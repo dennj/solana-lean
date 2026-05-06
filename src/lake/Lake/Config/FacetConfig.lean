@@ -115,5 +115,14 @@ public abbrev LeanLibFacetConfig := LibraryFacetConfig
 /-- A Lean executable facet's declarative configuration. -/
 public abbrev LeanExeFacetConfig := KFacetConfig LeanExe.facetKind
 
+/-- A Solana SBF program facet's declarative configuration. -/
+public abbrev SolanaProgramFacetConfig := KFacetConfig SolanaProgram.facetKind
+
+/-- A WebAssembly program facet's declarative configuration. -/
+public abbrev WasmProgramFacetConfig := KFacetConfig WasmProgram.facetKind
+
+/-- A freestanding cross-target program facet's declarative configuration. -/
+public abbrev FreestandingProgramFacetConfig := KFacetConfig FreestandingProgram.facetKind
+
 /-- An external library facet's declarative configuration. -/
 public abbrev ExternLibFacetConfig := KFacetConfig ExternLib.facetKind

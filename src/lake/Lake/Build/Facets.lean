@@ -253,6 +253,24 @@ builtin_facet default : LeanExe => FilePath
 /-- A Lean binary executable. -/
 builtin_facet exe : LeanExe => FilePath
 
+/-- The Solana program's default facet (i.e., an alias for `so`). -/
+builtin_facet default : SolanaProgram => FilePath
+
+/-- A linked Solana SBF program (`.so`). -/
+builtin_facet so : SolanaProgram => FilePath
+
+/-- The WebAssembly program's default facet (i.e., an alias for `wasm`). -/
+builtin_facet default : WasmProgram => FilePath
+
+/-- A linked WebAssembly program (`.wasm`). -/
+builtin_facet wasm : WasmProgram => FilePath
+
+/-- The freestanding program's default facet (i.e., an alias for `elf`). -/
+builtin_facet default : FreestandingProgram => FilePath
+
+/-- A linked freestanding cross-target program. -/
+builtin_facet elf : FreestandingProgram => FilePath
+
 /-- The external library's default facet (i.e., an alias for `static`) -/
 builtin_facet default : ExternLib => FilePath
 

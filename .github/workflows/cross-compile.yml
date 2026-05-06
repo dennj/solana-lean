@@ -1,0 +1,154 @@
+name: Cross-compile targets
+
+# Builds Lean with the LLVM backend enabled and exercises every freestanding
+# cross-compile target: SBF (Solana), WebAssembly (wasm32-wasip1), and the
+# RISC-V Sv39 kernel target. Also runs the cross-target stdlib probe corpus
+# and the generic cross-target adapter tests. Non-blocking: failures here
+# do not gate merges.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+# To bump platform-tools (only used by the SBF target):
+#   1. Update PLATFORM_TOOLS_VERSION below.
+#   2. If the canonical SBF data layout changed (re-extract per the
+#      docstring on `LLVM.dataLayoutForTriple` in
+#      src/Lean/Compiler/IR/EmitLLVM.lean), update it there.
+env:
+  PLATFORM_TOOLS_VERSION: v1.43
+
+jobs:
+  cross-compile:
+    name: Cross-compile (${{ runner.os }} x86_64)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        shell: nix develop -c bash -euxo pipefail {0}
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_COMPRESS: "true"
+      CCACHE_MAXSIZE: 400M
+      NIX_BUILD_SHELL: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: cross-ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            cross-ccache-${{ runner.os }}-
+
+      - name: Cache platform-tools
+        id: cache-platform-tools
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/platform-tools
+          key: platform-tools-${{ env.PLATFORM_TOOLS_VERSION }}-${{ runner.os }}-x86_64
+
+      - name: Download platform-tools
+        if: steps.cache-platform-tools.outputs.cache-hit != 'true'
+        # Pinned tarball from anza-xyz/platform-tools releases. Used only by
+        # the SBF target's link step (it ships clang/llc/ld.lld with the SBF
+        # backend). Other targets use the LLVM provided by the Nix flake.
+        run: |
+          mkdir -p platform-tools
+          curl -fsSL \
+            "https://github.com/anza-xyz/platform-tools/releases/download/${PLATFORM_TOOLS_VERSION}/platform-tools-linux-x86_64.tar.bz2" \
+            -o platform-tools.tar.bz2
+          tar -xjf platform-tools.tar.bz2 -C platform-tools
+          rm platform-tools.tar.bz2
+
+      - name: Install Node (for wasm32 probes)
+        shell: bash -euxo pipefail {0}
+        run: |
+          curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+          sudo apt-get install -y nodejs
+
+      - name: Install qemu-system-riscv64 (for kernel target)
+        shell: bash -euxo pipefail {0}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-misc
+
+      - name: Configure
+        run: |
+          cmake --preset release-with-llvm
+
+      - name: Build stage1
+        run: |
+          make -j"$(nproc)" -C build/release-with-llvm
+
+      - name: SBF target
+        env:
+          LEAN_SOLANA_TOOLS: ${{ github.workspace }}/platform-tools
+        run: |
+          ctest --test-dir build/release-with-llvm/stage1 -R '^solana$' \
+            --output-on-failure --verbose
+
+      - name: WebAssembly target
+        env:
+          LEAN_SOLANA_TOOLS: ${{ github.workspace }}/platform-tools
+        run: |
+          ctest --test-dir build/release-with-llvm/stage1 -R '^wasm$' \
+            --output-on-failure --verbose
+
+      - name: RISC-V kernel target
+        run: |
+          ctest --test-dir build/release-with-llvm/stage1 -R '^kernel_riscv64$' \
+            --output-on-failure --verbose
+
+      - name: Generic cross-target adapter tests
+        env:
+          LEAN_SOLANA_TOOLS: ${{ github.workspace }}/platform-tools
+        run: |
+          ctest --test-dir build/release-with-llvm/stage1 -R '^cross_target$' \
+            --output-on-failure --verbose
+
+      - name: Stdlib probe corpus
+        env:
+          LEAN_SOLANA_TOOLS: ${{ github.workspace }}/platform-tools
+        run: |
+          ctest --test-dir build/release-with-llvm/stage1 -R '^stdlib_probes$' \
+            --output-on-failure --verbose
+
+      - name: Cache Solana CLI
+        id: cache-solana-cli
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/solana/install
+          key: solana-cli-stable-${{ runner.os }}-x86_64
+
+      - name: Install Solana CLI (for solana-test-validator)
+        if: steps.cache-solana-cli.outputs.cache-hit != 'true'
+        shell: bash -euxo pipefail {0}
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+
+      - name: Add Solana CLI to PATH
+        run: |
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+      - name: Live-validator deploy test (SBF)
+        env:
+          LEAN_SOLANA_TOOLS: ${{ github.workspace }}/platform-tools
+          LEAN_SBF_DEPLOY_TEST: "1"
+          LEAN_SBF_BIN_DIR: ${{ github.workspace }}/build/release-with-llvm/stage1/bin
+        run: |
+          export PATH="$LEAN_SBF_BIN_DIR:$PATH"
+          tests/solana/deploy_test.sh
+</content>

@@ -16,6 +16,8 @@ public import Lean.Compiler.IR
 public import Lean.Compiler.CSimpAttr
 public import Lean.Compiler.FFI
 public import Lean.Compiler.MetaAttr
+public import Lean.Compiler.UnsupportedOnTarget
+public meta import Lean.Compiler.UnsupportedOnTargetCmd
 public import Lean.Compiler.NoncomputableAttr
 public import Lean.Compiler.Main
 public import Lean.Compiler.NameDemangling

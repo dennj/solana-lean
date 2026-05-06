@@ -3,6 +3,7 @@
 .#*
 .lake
 lake-manifest.json
+!tests/kernel_riscv64/lake-manifest.json
 /build
 /src/lakefile.toml
 /lakefile.toml

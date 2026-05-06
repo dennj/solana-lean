@@ -123,6 +123,270 @@ defaultTargets = [{repr libRoot}]
 name = {repr libRoot}
 "
 
+def crossLeanConfigFileContents (pkgName libRoot : String) :=
+s!"import Lake
+open Lake DSL
+
+package {repr pkgName} where
+  version := v!\"0.1.0\"
+
+@[default_target]
+lean_lib {libRoot} where
+  -- add library configuration options here
+"
+
+def solanaLeanConfigFileContents (pkgName libRoot libRootRaw : String) :=
+s!"import Lake
+open System Lake DSL
+
+package {repr pkgName} where
+  version := v!\"0.1.0\"
+
+lean_lib {libRoot} where
+  -- add library configuration options here
+
+@[default_target]
+target «{pkgName}.so» : FilePath := do
+  let some mod := (← findModule? `{libRoot})
+    | error \"missing module {libRoot}\"
+  buildSolanaProgram mod
+
+/--
+Deploy the Solana program built by `lake build`.
+
+USAGE:
+  lake run deploy [solana program deploy args...]
+-/
+script deploy (args) do
+  let soFile := FilePath.mk \".lake\" / \"build\" / \"solana\" / {repr (libRootRaw ++ ".so")}
+  unless (← soFile.pathExists) do
+    IO.eprintln (\"missing \" ++ soFile.toString ++ \"; run `lake build` first\")
+    return (1 : UInt32)
+  try
+    let child ← IO.Process.spawn \{
+      cmd := \"solana\"
+      args := #[\"program\", \"deploy\", soFile.toString] ++ args.toArray
+    }
+    child.wait
+  catch e =>
+    IO.eprintln (\"failed to run `solana program deploy`: \" ++ toString e)
+    return (1 : UInt32)
+"
+
+def wasmLeanConfigFileContents (pkgName libRoot : String) :=
+s!"import Lake
+open System Lake DSL
+
+package {repr pkgName} where
+  version := v!\"0.1.0\"
+
+lean_lib {libRoot} where
+  -- add library configuration options here
+
+@[default_target]
+target «{pkgName}.wasm» : FilePath := do
+  let some mod := (← findModule? `{libRoot})
+    | error \"missing module {libRoot}\"
+  buildWasmProgram mod
+"
+
+def kernelLeanConfigFileContents (pkgName libRoot : String) :=
+s!"import Lake
+open System Lake DSL
+
+package {repr pkgName} where
+  version := v!\"0.1.0\"
+
+lean_lib {libRoot} where
+  -- add library configuration options here
+
+lean_lib KernelMain where
+  roots := #[`Main]
+
+/-- Set `LEAN_RISCV64_LD=<path-to-ld.lld>` if your `leanc` cannot find it
+    via `PATH`. The same env override the `tests/kernel_riscv64/` test uses. -/
+@[default_target]
+target «kernel.elf» : FilePath := do
+  let modNames : Array Lean.Name := #[`{libRoot}, `Main]
+  let mods ← modNames.mapM fun n => do
+    let some m := (← findModule? n) | error s!\"missing module \{n}\"
+    pure m
+  buildFreestandingProgram
+    (mods         := mods)
+    (extraSources := #[\"boot.S\", \"kernel.c\"])
+    (linkerScript := \"kernel.ld\")
+    (entry        := \"_start\")
+"
+
+def solanaTomlConfigFileContents (pkgName libRoot : String) :=
+s!"name = {repr pkgName}
+version = \"0.1.0\"
+defaultTargets = [{repr libRoot}]
+
+[[solana_program]]
+name = {repr libRoot}
+programName = {repr libRoot}
+"
+
+def wasmTomlConfigFileContents (pkgName libRoot : String) :=
+s!"name = {repr pkgName}
+version = \"0.1.0\"
+defaultTargets = [{repr libRoot}]
+
+[[wasm_program]]
+name = {repr libRoot}
+programName = {repr libRoot}
+"
+
+def kernelTomlConfigFileContents (pkgName libRoot : String) :=
+s!"name = {repr pkgName}
+version = \"0.1.0\"
+defaultTargets = [{repr libRoot}]
+
+[[freestanding_program]]
+name = {repr libRoot}
+programName = \"kernel.elf\"
+roots = [{repr libRoot}, \"Main\"]
+extraSources = [\"boot.S\", \"kernel.c\"]
+linkerScript = \"kernel.ld\"
+entry = \"_start\"
+triple = \"riscv64-unknown-none-elf\"
+"
+
+def solanaRootFileContents (libRoot : Name) :=
+s!"import Std.Solana
+
+open Std.Solana
+
+namespace {libRoot}
+
+@[solana_entrypoint]
+def entry (ctx : ProgramContext) : UInt64 :=
+  let _ := msg! \"hello from {libRoot}\"
+  ctx.data.size.toUInt64
+
+end {libRoot}
+"
+
+def solanaReadmeFileContents (pkgName : String) := s!"# {pkgName}
+
+A Solana SBF program written in pure Lean.
+
+## Build
+
+```
+lake build
+```
+
+Produces `.lake/build/solana/{pkgName}.so`, ready for `solana program deploy`.
+
+## Deploy
+
+```
+solana program deploy .lake/build/solana/{pkgName}.so
+```
+"
+
+def wasmRootFileContents (libRoot : Name) :=
+s!"import Std.Wasm
+
+namespace {libRoot}
+
+@[export lean_wasm_main]
+def entry (_x : UInt64) : UInt64 :=
+  let _ := Std.Wasm.log \"hello from {libRoot}\"
+  0
+
+end {libRoot}
+"
+
+def wasmReadmeFileContents (pkgName : String) := s!"# {pkgName}
+
+A WebAssembly (wasm32-wasip1) program written in pure Lean.
+
+## Build
+
+```
+lake build
+```
+
+Produces `.lake/build/wasm/{pkgName}.wasm`. Run with any WASI host:
+
+```
+wasmtime .lake/build/wasm/{pkgName}.wasm
+```
+"
+
+def kernelRootFileContents (libRoot : Name) :=
+s!"namespace {libRoot}
+
+inductive Event where
+  | boot
+
+inductive Action where
+  | log : String -> Action
+  | halt
+
+structure State where
+  boots : Nat
+
+def initialState : State := \{ boots := 0 }
+
+def step (s : State) : Event -> Prod State (List Action)
+  | .boot =>
+    (\{ s with boots := s.boots + 1 },
+      [.log \"hello from {libRoot}\", .halt])
+
+end {libRoot}
+"
+
+def kernelMainFileContents (libRoot : Name) :=
+s!"import {libRoot}
+
+@[extern \"kernel_log\", never_extract]
+opaque kernelLogImpl (s : @& String) : Unit
+
+def kernelLog (s : String) : BaseIO Unit :=
+  pure (kernelLogImpl s)
+
+def runActions : List {libRoot}.Action -> BaseIO Unit
+  | [] => pure ()
+  | .log msg :: rest => do
+    kernelLog msg
+    runActions rest
+  | .halt :: _ => pure ()
+
+@[export lean_kernel_main_io]
+def entry : BaseIO UInt64 := do
+  let (state, actions) := {libRoot}.step {libRoot}.initialState .boot
+  runActions actions
+  return state.boots.toUInt64
+"
+
+def kernelReadmeFileContents (pkgName : String) := s!"# {pkgName}
+
+A freestanding RISC-V kernel written in pure Lean (Sv39 paging target).
+
+## Build
+
+```
+lake build
+```
+
+Produces `.lake/build/freestanding/kernel.elf`. Boot under QEMU:
+
+```
+qemu-system-riscv64 -machine virt -m 128M -smp 1 -bios default \\
+  -kernel .lake/build/freestanding/kernel.elf -display none -serial stdio
+```
+
+You must provide `boot.S`, `kernel.c`, and `kernel.ld` alongside the Lean
+sources. See `tests/kernel_riscv64/` in the Lean source tree for a worked
+example of all three. If `leanc` cannot find `ld.lld` via `PATH`, set
+`LEAN_RISCV64_LD=<path-to-ld.lld>` (matches the env override the kernel
+test in the source tree uses).
+"
+
 def mathLaxLeanConfigFileContents (pkgName libRoot rev : String) :=
 s!"import Lake
 open Lake DSL
@@ -331,6 +595,7 @@ jobs:
 /-- Lake package template identifier. -/
 public inductive InitTemplate
 | std | exe | lib | mathLax | math
+| solana | wasm | kernel
 deriving Repr, DecidableEq
 
 public instance : Inhabited InitTemplate := ⟨.std⟩
@@ -341,6 +606,9 @@ public def InitTemplate.ofString? : String → Option InitTemplate
 | "lib" => some .lib
 | "math-lax" => some .mathLax
 | "math" => some .math
+| "solana" => some .solana
+| "wasm" => some .wasm
+| "kernel" => some .kernel
 | _ => none
 
 def escapeIdent (id : String) : String :=
@@ -372,6 +640,13 @@ def InitTemplate.configFileContents
   | .mathLax, .toml => mathLaxTomlConfigFileContents pkgNameStr root.toString mathRev
   | .math, .lean => mathLeanConfigFileContents pkgNameStr (escapeName! root) mathRev
   | .math, .toml => mathTomlConfigFileContents pkgNameStr root.toString mathRev
+  | .solana, .lean =>
+    solanaLeanConfigFileContents pkgNameStr (escapeName! root) root.toString
+  | .solana, .toml => solanaTomlConfigFileContents pkgNameStr root.toString
+  | .wasm, .lean => wasmLeanConfigFileContents pkgNameStr (escapeName! root)
+  | .wasm, .toml => wasmTomlConfigFileContents pkgNameStr root.toString
+  | .kernel, .lean => kernelLeanConfigFileContents pkgNameStr (escapeName! root)
+  | .kernel, .toml => kernelTomlConfigFileContents pkgNameStr root.toString
 
 def createLeanActionWorkflow (dir : FilePath) (tmp : InitTemplate) : LogIO PUnit := do
   logVerbose "creating lean-action CI workflow"
@@ -439,16 +714,23 @@ def initPkg
 
   -- write example code if the files do not already exist
   if let some rootFile := rootFile? then
-    let libDir := rootFile.withExtension ""
-    let basicFile := libDir / "Basic.lean"
-    unless (← basicFile.pathExists) do
-      IO.FS.createDirAll libDir
-      IO.FS.writeFile basicFile basicFileContents
-    let rootContents := if tmp = .math then
-      mathLibRootFileContents root
+    if tmp = .solana then
+      IO.FS.writeFile rootFile <| solanaRootFileContents root
+    else if tmp = .wasm then
+      IO.FS.writeFile rootFile <| wasmRootFileContents root
+    else if tmp = .kernel then
+      IO.FS.writeFile rootFile <| kernelRootFileContents root
     else
-      libRootFileContents root.toString root
-    IO.FS.writeFile rootFile rootContents
+      let libDir := rootFile.withExtension ""
+      let basicFile := libDir / "Basic.lean"
+      unless (← basicFile.pathExists) do
+        IO.FS.createDirAll libDir
+        IO.FS.writeFile basicFile basicFileContents
+      let rootContents := if tmp = .math then
+        mathLibRootFileContents root
+      else
+        libRootFileContents root.toString root
+      IO.FS.writeFile rootFile rootContents
   if tmp matches .std | .exe then
     let mainFile := dir / mainFileName
     unless (← mainFile.pathExists) do
@@ -457,11 +739,25 @@ def initPkg
       else
         IO.FS.writeFile mainFile <| mainFileContents root
 
+  if tmp = .kernel then
+    let mainFile := dir / mainFileName
+    unless (← mainFile.pathExists) do
+      IO.FS.writeFile mainFile <| kernelMainFileContents root
+
+  -- `[[solana_program]]` / `[[wasm_program]]` / `[[freestanding_program]]`
+  -- keywords cover the toml path, so no build.sh scripts are emitted any more.
+
   -- Initialize a README.md file if none exists.
   let readmeFile := dir / "README.md"
   unless (← readmeFile.pathExists) do
     let contents := if tmp = .math then
         mathReadmeFileContents <| dotlessName name
+      else if tmp = .solana then
+        solanaReadmeFileContents <| dotlessName name
+      else if tmp = .wasm then
+        wasmReadmeFileContents <| dotlessName name
+      else if tmp = .kernel then
+        kernelReadmeFileContents <| dotlessName name
       else
         readmeFileContents <| dotlessName name
     IO.FS.writeFile readmeFile contents

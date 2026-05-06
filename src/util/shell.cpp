@@ -177,6 +177,7 @@ static struct option g_long_options[] = {
     {"timeout",      optional_argument, 0, 'T'},
     {"c",            optional_argument, 0, 'c'},
     {"bc",           optional_argument, 0, 'b'},
+    {"target",       required_argument, 0, 'Y'},
     {"features",     no_argument,       0, 'f'},
     {"exitOnPanic",  no_argument,       0, 'e'},
 #if defined(LEAN_MULTI_THREAD)

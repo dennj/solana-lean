@@ -12,6 +12,7 @@ public import Lean.Compiler.LCNF.Simp.Used
 public import Lean.Compiler.LCNF.Simp.DefaultAlt
 public import Lean.Compiler.LCNF.Simp.SimpValue
 public import Lean.Compiler.LCNF.Simp.ConstantFold
+public import Lean.Compiler.LCNF.ElimDead
 
 public section
 
@@ -257,6 +258,10 @@ partial def simp (code : Code .pure) : SimpM (Code .pure) := withIncRecDepth do
     else
       let k ← simp k
       if (← isUsed decl.fvarId) then
+        markUsedLetDecl decl
+        return code.updateLet! decl k
+      else if !(LetValue.safeToElim (← getEnv) decl.value) then
+        -- Unused but not safe to drop (e.g. `@[never_extract]` side effect): keep it.
         markUsedLetDecl decl
         return code.updateLet! decl k
       else

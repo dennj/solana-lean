@@ -4,12 +4,20 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Sebastian Ullrich
 -/
 import Lean.Compiler.FFI
+import Leanc.CrossTarget.RiscV64Freestanding
+import Leanc.CrossTarget.SBF
+import Leanc.CrossTarget.Wasm
 
 open Lean.Compiler.FFI
+open System (FilePath)
+open Leanc
+
+def crossTargets : List CrossTarget :=
+  [SBF.target, Wasm.target, RiscV64Freestanding.target]
 
 def main (args : List String) : IO UInt32 := do
   let root ← match (← IO.getEnv "LEAN_SYSROOT") with
-    | some root => pure <| System.FilePath.mk root
+    | some root => pure <| FilePath.mk root
     | none      => pure <| (← IO.appDir).parent.get!
   let mut cc := "@LEANC_CC@".replace "ROOT" root.toString
 
@@ -21,9 +29,17 @@ which can be overridden with the environment variable `LEAN_CC`. All parameters 
 as-is to the wrapped compiler.
 
 Interesting options:
+* `--target=<triple>`: cross-compile pipeline keyed on the LLVM target triple
+                        (e.g. `riscv64-unknown-none-elf`, `wasm32-wasip1`,
+                        `sbf-solana-solana`).
+* `--leanc-link-arg=<arg>`: pass an argument to a cross-target linker
 * `--print-cflags`: print C compiler flags necessary for building against the Lean runtime and exit
 * `--print-ldflags`: print C compiler flags necessary for statically linking against the Lean library and exit"
     return 1
+
+  if let some triple := findTarget? args then
+    if let some t := crossTargets.find? (·.matches triple) then
+      return ← t.link root args triple
 
   -- It is difficult to identify the correct minor version here, leading to linking warnings like:
   -- `ld64.lld: warning: /usr/lib/system/libsystem_kernel.dylib has version 13.5.0, which is newer than target minimum of 13.0.0`

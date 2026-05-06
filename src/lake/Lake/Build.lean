@@ -9,6 +9,10 @@ prelude
 public import Lake.Build.Actions
 public import Lake.Build.Common
 public import Lake.Build.Context
+public import Lake.Build.CrossProgram
+public import Lake.Build.SolanaProgram
+public import Lake.Build.WasmProgram
+public import Lake.Build.FreestandingProgram
 public import Lake.Build.Data
 public import Lake.Build.Executable
 public import Lake.Build.ExternLib

@@ -51,4 +51,25 @@ register_builtin_option compiler.inLeanIR : Bool := {
   descr := "Internal. Indicates whether the compiler is currently running in `leanir`."
 }
 
+register_builtin_option compiler.target : String := {
+  defValue := ""
+  descr := "LLVM target triple to cross-compile for (empty = host). When set, \
+    the LLVM backend tags the module with this triple and uses its canonical data layout."
+}
+
+register_builtin_option compiler.runtime : String := {
+  defValue := "host"
+  descr := "Lean runtime to link into the emitted bitcode: \"host\" links \
+    `lean.h.bc`; \"none\" emits bitcode for a target that supplies its own runtime \
+    at link time. `--target=<triple>` sets this to \"none\" automatically."
+}
+
+register_builtin_option compiler.crossImports : String := {
+  defValue := ""
+  descr := "Module name to prepend to every elaborated file's imports. \
+    Used by cross-compile target packages to inject a deny-list / target-policy \
+    module that must be active regardless of the user file's own imports. \
+    A package that needs multiple should ship an umbrella module that imports them."
+}
+
 end Lean.Compiler

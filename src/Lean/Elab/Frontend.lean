@@ -265,23 +265,31 @@ def runFrontend
   -- default to async elaboration; see also `Elab.async` docs
   let opts := Elab.async.setIfNotSet opts true
   let ctx := { inputCtx with }
+  let crossModules (mergedOpts : Options) : Array Import :=
+    let s := (Compiler.compiler.crossImports.get mergedOpts).trimAscii.toString
+    if !s.isEmpty then #[{ module := s.toName }]
+    else if !(Compiler.compiler.target.get mergedOpts).isEmpty
+        && Compiler.compiler.runtime.get mergedOpts == "none" then
+      #[{ module := `Std.Freestanding.Unsupported }]
+    else
+      #[]
   let setup stx := do
     if let some setup := setup? then
       liftM <| setup.dynlibs.forM Lean.loadDynlib
+      let mergedOpts := opts.mergeBy (fun _ _ hOpt => hOpt) setup.options.toOptions
       return .ok {
         trustLevel
         package? := setup.package?
         mainModuleName := setup.name
         isModule := strictOr setup.isModule stx.isModule
-        imports := setup.imports?.getD stx.imports
+        imports := crossModules mergedOpts ++ setup.imports?.getD stx.imports
         plugins := plugins ++ setup.plugins
         importArts := setup.importArts
-        -- override cmdline options with setup options
-        opts := opts.mergeBy (fun _ _ hOpt => hOpt) setup.options.toOptions
+        opts := mergedOpts
       }
     else
       return .ok {
-        imports := stx.imports
+        imports := crossModules opts ++ stx.imports
         isModule := stx.isModule
         mainModuleName, opts, trustLevel, plugins
       }

@@ -10,6 +10,8 @@ public import Lean.Compiler.NameMangling
 public import Lean.Compiler.IR.EmitUtil
 public import Lean.Compiler.IR.NormIds
 public import Lean.Compiler.IR.LLVMBindings
+public import Lean.Compiler.UnsupportedOnTarget
+public import Lean.DeclarationRange
 import Lean.Compiler.LCNF.Types
 import Lean.Compiler.ModPkgExt
 import Lean.Runtime
@@ -38,13 +40,77 @@ time. These changes can likely be done similar to the ones in EmitC:
 def leanMainFn := "_lean_main"
 
 namespace LLVM
--- TODO(bollu): instantiate target triple and find out what size_t is.
+/-- Triple-blind fallback used by entry points without triple context.
+Most call sites consult `getSizeTType` / `getUnsignedType` instead. -/
 def size_tType (llvmctx : LLVM.Context) : BaseIO (LLVM.LLVMType llvmctx) :=
   LLVM.i64Type llvmctx
 
--- TODO(bollu): instantiate target triple and find out what unsigned is.
 def unsignedType (llvmctx : LLVM.Context) : BaseIO (LLVM.LLVMType llvmctx) :=
   LLVM.i32Type llvmctx
+
+/-- Canonical data-layout string for triples the host LLVM may not know.
+Returns the empty string for triples LLVM derives a layout for itself.
+
+To re-extract a layout (e.g. when bumping platform-tools):
+```
+$PLATFORM_TOOLS/llvm/bin/clang --target=<triple> -emit-llvm -S empty.c -o empty.ll
+head -3 empty.ll  # take the `target datalayout = "..."` value
+```
+-/
+def dataLayoutForTriple (triple : String) : String :=
+  if triple == "sbf-solana-solana" then
+    -- clang --target=sbf-solana-solana (anza-xyz/llvm-project, platform-tools v1.43)
+    "e-m:e-p:64:64-i64:64-n32:64-S128"
+  else if triple.startsWith "wasm32-" then
+    -- clang --target=wasm32-unknown-unknown; all wasm32-* dialects share this layout.
+    "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-n32:64-S128-ni:1:10:20"
+  else if triple.startsWith "riscv64-unknown-none" then
+    -- clang --target=riscv64-unknown-none-elf
+    "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128"
+  else
+    ""
+
+/-- Pointer width in bits for `triple`, or `none` if no canonical layout is known. -/
+def pointerBitsForTriple (triple : String) : BaseIO (Option Nat) := do
+  let layout := dataLayoutForTriple triple
+  if layout.isEmpty then return none
+  let td ← LLVM.createTargetDataFromString layout
+  let bytes ← LLVM.pointerSize td
+  LLVM.disposeTargetData td
+  return some (bytes.toNat * 8)
+
+/-- Reject programs that reach a decl flagged unsupported for `triple` (via
+`register_unsupported_on_target`). Returns a message naming each offender,
+its registered reason, and the user-side direct callers with source ranges. -/
+def checkUnsupportedOnTarget (env : Environment) (triple : String) :
+    BaseIO (Option String) := do
+  if triple.isEmpty then return none
+  let decls := getDecls env
+  let usedSet := NameSet.ofArray (collectUsedDecls env decls)
+  let hits := Lean.Compiler.collectUnsupportedOnTarget env triple usedSet
+  if hits.isEmpty then return none
+  let deniedSet := hits.foldl (init := NameSet.empty) fun s (n, _) => s.insert n
+  let callers := collectDirectCallersOf decls deniedSet
+  let modNames := env.header.moduleNames
+  let formatLoc (c : Name) : String :=
+    let pos :=
+      match declRangeExt.find? (level := .exported) env c
+        <|> declRangeExt.find? (level := .server) env c with
+      | some r => s!" at line {r.range.pos.line}:{r.range.pos.column}"
+      | none   => ""
+    let mod :=
+      match env.getModuleIdxFor? c with
+      | some idx => if idx.toNat < modNames.size then s!" in {modNames[idx.toNat]!}" else ""
+      | none     => ""
+    pos ++ mod
+  let blocks := hits.map fun (n, d) =>
+    let header := s!"  {n} — {d.reason}"
+    let lines := match callers.find? n with
+      | some cs => cs.toArray.map fun c => s!"    referenced from {c}{formatLoc c}"
+      | none    => #[]
+    if lines.isEmpty then header
+    else header ++ "\n" ++ "\n".intercalate lines.toList
+  return some s!"the following decls are not supported on the {triple} target:\n{"\n".intercalate blocks.toList}"
 
 -- Helper to add a function if it does not exist, and to return the function handle if it does.
 def getOrAddFunction (m : LLVM.Module ctx) (name : String) (type : LLVM.LLVMType ctx) : BaseIO (LLVM.Value ctx) :=  do
@@ -77,6 +143,8 @@ structure Context (llvmctx : LLVM.Context) where
   mainFn     : FunId := default
   mainParams : Array Param := #[]
   llvmmodule : LLVM.Module llvmctx
+  /-- Active LLVM target triple (empty = host); drives `getSizeTType`. -/
+  triple     : String := ""
 
 structure State (llvmctx : LLVM.Context) where
   var2val : Std.HashMap VarId (LLVM.LLVMType llvmctx × LLVM.Value llvmctx)
@@ -108,6 +176,26 @@ def getEnv : M llvmctx Environment := Context.env <$> read
 
 def getModName : M llvmctx  Name := Context.modName <$> read
 
+def getTriple : M llvmctx String := Context.triple <$> read
+
+/-- Pointer width in bits for the active triple; `64` for the host
+    or any triple without a known layout. -/
+private def getSizeTBits : M llvmctx Nat := do
+  let triple ← getTriple
+  if triple.isEmpty then return 64
+  match ← LLVM.pointerBitsForTriple triple with
+  | some 32 => return 32
+  | _       => return 64
+
+/-- LLVM type for `size_t` / `usize` for the active triple (`i32` on 32-bit-pointer
+    targets like `wasm32-*`, `i64` elsewhere). -/
+def getSizeTType : M llvmctx (LLVM.LLVMType llvmctx) := do
+  if (← getSizeTBits) == 32 then LLVM.i32Type llvmctx else LLVM.i64Type llvmctx
+
+/-- LLVM type for C `unsigned int`. Stays `i32` on every shipping target. -/
+def getUnsignedType : M llvmctx (LLVM.LLVMType llvmctx) :=
+  LLVM.i32Type llvmctx
+
 def getDecl (n : Name) : M llvmctx Decl := do
   let env ← getEnv
   match findEnvDecl env n with
@@ -120,8 +208,9 @@ def constInt8 (n : Nat) : M llvmctx (LLVM.Value llvmctx) :=  do
 def constInt64 (n : Nat) : M llvmctx (LLVM.Value llvmctx) :=  do
     LLVM.constInt64 llvmctx (UInt64.ofNat n)
 
-def constIntSizeT (n : Nat) : M llvmctx (LLVM.Value llvmctx) :=  do
-    LLVM.constIntSizeT llvmctx (UInt64.ofNat n)
+def constIntSizeT (n : Nat) : M llvmctx (LLVM.Value llvmctx) := do
+  if (← getSizeTBits) == 32 then LLVM.constInt32 llvmctx (UInt64.ofNat n)
+  else LLVM.constIntSizeT llvmctx (UInt64.ofNat n)
 
 def constIntUnsigned (n : Nat) : M llvmctx (LLVM.Value llvmctx) :=  do
     LLVM.constIntUnsigned llvmctx (UInt64.ofNat n)
@@ -134,7 +223,7 @@ def callLeanBox (builder : LLVM.Builder llvmctx)
     (arg : LLVM.Value llvmctx) (name : String := "") : M llvmctx (LLVM.Value llvmctx) := do
   let fnName :=  "lean_box"
   let retty ← LLVM.voidPtrType llvmctx
-  let argtys := #[ ← LLVM.size_tType llvmctx ]
+  let argtys := #[ ← getSizeTType ]
   let fn ← getOrCreateFunctionPrototype (← getLLVMModule) retty fnName argtys
   let fnty ← LLVM.functionType retty argtys
   LLVM.buildCall2 builder fnty fn  #[arg] name
@@ -161,7 +250,7 @@ def callLeanRefcountFn (builder : LLVM.Builder llvmctx)
     (delta : Option (LLVM.Value llvmctx) := Option.none) : M llvmctx Unit := do
   let fnName :=  s!"lean_{kind}{if checkRef? then "" else "_ref"}{if delta.isNone then "" else "_n"}"
   let retty ← LLVM.voidType llvmctx
-  let argtys ← if delta.isNone then pure #[← LLVM.voidPtrType llvmctx] else pure #[← LLVM.voidPtrType llvmctx, ← LLVM.size_tType llvmctx]
+  let argtys ← if delta.isNone then pure #[← LLVM.voidPtrType llvmctx] else pure #[← LLVM.voidPtrType llvmctx, ← getSizeTType]
   let fn ← getOrCreateFunctionPrototype (← getLLVMModule) retty fnName argtys
   let fnty ← LLVM.functionType retty argtys
   match delta with
@@ -185,7 +274,7 @@ def callLeanDecRef (builder : LLVM.Builder llvmctx) (res : LLVM.Value llvmctx) :
 def callLeanUnsignedToNatFn (builder : LLVM.Builder llvmctx)
     (n : Nat) (name : String := "") : M llvmctx (LLVM.Value llvmctx) := do
   let mod ← getLLVMModule
-  let argtys := #[← LLVM.i32Type llvmctx]
+  let argtys := #[← getUnsignedType]
   let retty ← LLVM.voidPtrType llvmctx
   let f ←   getOrCreateFunctionPrototype mod retty "lean_unsigned_to_nat"  argtys
   let fnty ← LLVM.functionType retty argtys
@@ -196,7 +285,7 @@ def callLeanMkStringUncheckedFn (builder : LLVM.Builder llvmctx)
     (strPtr nBytes nChars : LLVM.Value llvmctx) (name : String) : M llvmctx (LLVM.Value llvmctx) := do
   let fnName :=  "lean_mk_string_unchecked"
   let retty ← LLVM.voidPtrType llvmctx
-  let argtys :=  #[← LLVM.voidPtrType llvmctx, ← LLVM.size_tType llvmctx, ← LLVM.size_tType llvmctx]
+  let argtys :=  #[← LLVM.voidPtrType llvmctx, ← getSizeTType, ← getSizeTType]
   let fn ← getOrCreateFunctionPrototype (← getLLVMModule) retty fnName argtys
   let fnty ← LLVM.functionType retty argtys
   LLVM.buildCall2 builder fnty fn #[strPtr, nBytes, nChars] name
@@ -240,8 +329,8 @@ def callLeanAllocCtor (builder : LLVM.Builder llvmctx)
     (tag num_objs scalar_sz : Nat) (name : String := "") : M llvmctx (LLVM.Value llvmctx) := do
   let fnName :=  "lean_alloc_ctor"
   let retty ← LLVM.voidPtrType llvmctx
-  let i32 ← LLVM.i32Type llvmctx
-  let argtys :=  #[i32, i32, i32]
+  let unsigned ← getUnsignedType
+  let argtys :=  #[unsigned, unsigned, unsigned]
   let fn ← getOrCreateFunctionPrototype (← getLLVMModule) retty fnName argtys
   let fnty ← LLVM.functionType retty argtys
 
@@ -255,7 +344,7 @@ def callLeanCtorSet (builder : LLVM.Builder llvmctx)
   let fnName := "lean_ctor_set"
   let retty ← LLVM.voidType llvmctx
   let voidptr ← LLVM.voidPtrType llvmctx
-  let unsigned ← LLVM.unsignedType llvmctx
+  let unsigned ← getUnsignedType
   let argtys :=  #[voidptr, unsigned, voidptr]
   let fn ← getOrCreateFunctionPrototype (← getLLVMModule) retty fnName argtys
   let fnty ← LLVM.functionType retty argtys
@@ -275,7 +364,7 @@ def callLeanAllocClosureFn (builder : LLVM.Builder llvmctx)
     (f arity nys : LLVM.Value llvmctx) (retName : String := "") : M llvmctx (LLVM.Value llvmctx) := do
   let fnName :=  "lean_alloc_closure"
   let retty ← LLVM.voidPtrType llvmctx
-  let argtys := #[ ← LLVM.voidPtrType llvmctx, ← LLVM.unsignedType llvmctx, ← LLVM.unsignedType llvmctx]
+  let argtys := #[ ← LLVM.voidPtrType llvmctx, ← getUnsignedType, ← getUnsignedType]
   let fn ← getOrCreateFunctionPrototype (← getLLVMModule) retty fnName argtys
   let fnty ← LLVM.functionType retty argtys
   LLVM.buildCall2 builder fnty fn  #[f, arity, nys] retName
@@ -284,7 +373,7 @@ def callLeanClosureSetFn (builder : LLVM.Builder llvmctx)
     (closure ix arg : LLVM.Value llvmctx) (retName : String := "") : M llvmctx Unit := do
   let fnName :=  "lean_closure_set"
   let retty ← LLVM.voidType llvmctx
-  let argtys := #[ ← LLVM.voidPtrType llvmctx, ← LLVM.unsignedType llvmctx, ← LLVM.voidPtrType llvmctx]
+  let argtys := #[ ← LLVM.voidPtrType llvmctx, ← getUnsignedType, ← LLVM.voidPtrType llvmctx]
   let fn ← getOrCreateFunctionPrototype (← getLLVMModule) retty fnName argtys
   let fnty ← LLVM.functionType retty argtys
   let _ ← LLVM.buildCall2 builder fnty fn  #[closure, ix, arg] retName
@@ -292,11 +381,12 @@ def callLeanClosureSetFn (builder : LLVM.Builder llvmctx)
 def callLeanObjTag (builder : LLVM.Builder llvmctx)
     (closure : LLVM.Value llvmctx) (retName : String := "") : M llvmctx (LLVM.Value llvmctx) := do
   let fnName :=  "lean_obj_tag"
-  let retty ← LLVM.i32Type llvmctx
+  let retty ← getUnsignedType
   let argtys := #[ ← LLVM.voidPtrType llvmctx]
   let fn ← getOrCreateFunctionPrototype (← getLLVMModule) retty fnName argtys
   let fnty ← LLVM.functionType retty argtys
   let out ← LLVM.buildCall2 builder fnty fn  #[closure] retName
+  -- Widen to i64 to match `emitCase`'s switch discriminator.
   LLVM.buildSextOrTrunc builder out (← LLVM.i64Type llvmctx)
 
 def callLeanIOResultGetValue (builder : LLVM.Builder llvmctx)
@@ -312,7 +402,7 @@ def callLeanCtorRelease (builder : LLVM.Builder llvmctx)
     (closure i : LLVM.Value llvmctx) (retName : String := "") : M llvmctx Unit := do
   let fnName :=  "lean_ctor_release"
   let retty ← LLVM.voidType llvmctx
-  let argtys := #[ ← LLVM.voidPtrType llvmctx, ← LLVM.unsignedType llvmctx]
+  let argtys := #[ ← LLVM.voidPtrType llvmctx, ← getUnsignedType]
   let fn ← getOrCreateFunctionPrototype (← getLLVMModule) retty fnName argtys
   let fnty ← LLVM.functionType retty argtys
   let _ ← LLVM.buildCall2 builder fnty fn  #[closure, i] retName
@@ -335,7 +425,7 @@ def toLLVMType (t : IRType) : M llvmctx (LLVM.LLVMType llvmctx) := do
   | IRType.uint32     => LLVM.intTypeInContext llvmctx 32
   | IRType.uint64     => LLVM.intTypeInContext llvmctx 64
   -- TODO: how to cleanly size_t in LLVM? We can do eg. instantiate the current target and query for size.
-  | IRType.usize      => LLVM.size_tType llvmctx
+  | IRType.usize      => getSizeTType
   | IRType.object     => do LLVM.pointerType (← LLVM.i8Type llvmctx)
   | IRType.tagged     => do LLVM.pointerType (← LLVM.i8Type llvmctx)
   | IRType.tobject    => do LLVM.pointerType (← LLVM.i8Type llvmctx)
@@ -491,38 +581,45 @@ def emitFnDeclAux (mod : LLVM.Module llvmctx)
     (decl : Decl) (cppBaseName : String) (isExternal : Bool) : M llvmctx (LLVM.Value llvmctx) := do
   let ps := decl.params
   let env ← getEnv
-  -- bollu: if we have a declaration with no parameters, then we emit it as a global pointer.
-  -- bollu: Otherwise, we emit it as a function
+  let triple ← getTriple
+  -- Cross-compile: skip the writable slot for 0-arg decls (see
+  -- `getOrAddFunIdValue`, which calls `_init_<name>` directly). A `.bss`/`.data`
+  -- slot would be rejected by loaders that forbid writable segments.
+  if ps.isEmpty && !triple.isEmpty && !isExternal then
+    let retty ← toLLVMType decl.resultType
+    let fnty ← LLVM.functionType retty #[] (isVarArg := false)
+    let initFn ← LLVM.getOrAddFunction mod ("_init_" ++ cppBaseName) fnty
+    LLVM.setVisibility initFn LLVM.Visibility.hidden
+    return initFn
   let global ←
     if ps.isEmpty then
-        let retty ← (toLLVMType decl.resultType)
+        let retty ← toLLVMType decl.resultType
         let global ← LLVM.getOrAddGlobal mod cppBaseName retty
         if !isExternal then
           LLVM.setInitializer global (← LLVM.getUndef retty)
         pure global
     else
-        let retty ← (toLLVMType decl.resultType)
+        let retty ← toLLVMType decl.resultType
         let mut argtys := #[]
         for p in ps do
-          -- if it is extern, then we must not add erased args
           if !(isExternC env decl.name) || !p.ty.isErased then
             argtys := argtys.push (← toLLVMType p.ty)
-        -- TODO (bollu): simplify this API, this code of `closureMaxArgs` is duplicated in multiple places.
         if argtys.size > closureMaxArgs && isBoxedName decl.name then
           argtys := #[← LLVM.pointerType (← LLVM.voidPtrType llvmctx)]
         let fnty ← LLVM.functionType retty argtys (isVarArg := false)
         LLVM.getOrAddFunction mod cppBaseName fnty
-  -- we must now set symbol visibility for global.
+  -- On cross-compile targets, restrict exports to `@[export]`-annotated decls;
+  -- internal specializer helpers must stay hidden so they don't reach `.dynsym`,
+  -- where strict loaders reject any unrecognised global symbol.
+  let exportable := triple.isEmpty || isExport env decl.name
   if ps.isEmpty then
-    if isClosedTermName env decl.name then LLVM.setVisibility global LLVM.Visibility.hidden -- static
-    else if isExternal then pure () -- extern (Recall that C/LLVM funcs are extern linkage by default.)
-    else LLVM.setDLLStorageClass global LLVM.DLLStorageClass.export  -- LEAN_EXPORT
-  else if !isExternal
-    -- An extern decl might be linked in from a different translation unit.
-    -- Thus, we cannot export an external declaration as we do not define it,
-    -- only declare its presence.
-    -- So, we only export non-external definitions.
-    then LLVM.setDLLStorageClass global LLVM.DLLStorageClass.export
+    if isClosedTermName env decl.name then LLVM.setVisibility global LLVM.Visibility.hidden
+    else if isExternal then pure ()
+    else if exportable then LLVM.setDLLStorageClass global LLVM.DLLStorageClass.export
+    else LLVM.setVisibility global LLVM.Visibility.hidden
+  else if !isExternal then
+    if exportable then LLVM.setDLLStorageClass global LLVM.DLLStorageClass.export
+    else LLVM.setVisibility global LLVM.Visibility.hidden
   return global
 
 
@@ -703,8 +800,16 @@ def getOrAddFunIdValue (builder : LLVM.Builder llvmctx) (f : FunId) : M llvmctx 
   let fcname ← toCName f
   let retty ← toLLVMType decl.resultType
   if decl.params.isEmpty then
-     let gslot ← LLVM.getOrAddGlobal (← getLLVMModule) fcname retty
-     LLVM.buildLoad2 builder retty gslot
+    -- Cross-compile: call `_init_<name>` at every use site rather than caching
+    -- the value in a writable global slot, which loaders may reject.
+    let triple ← getTriple
+    if !triple.isEmpty then
+      let fnty ← LLVM.functionType retty #[] (isVarArg := false)
+      let initFn ← LLVM.getOrAddFunction (← getLLVMModule) ("_init_" ++ fcname) fnty
+      LLVM.buildCall2 builder fnty initFn #[]
+    else
+      let gslot ← LLVM.getOrAddGlobal (← getLLVMModule) fcname retty
+      LLVM.buildLoad2 builder retty gslot
   else
     let argtys ← decl.params.mapM (fun p => do toLLVMType p.ty)
     let fnty ← LLVM.functionType retty argtys
@@ -735,7 +840,7 @@ def emitApp (builder : LLVM.Builder llvmctx) (z : VarId) (f : VarId) (ys : Array
     let retty ← LLVM.voidPtrType llvmctx
     let args := #[← emitLhsVal builder f, ← constIntUnsigned ys.size, aargs]
     -- '1 + ...'. '1' for the fn and 'args' for the arguments
-    let argtys := #[← LLVM.voidPtrType llvmctx, ← LLVM.unsignedType llvmctx, ← LLVM.voidPtrType llvmctx]
+    let argtys := #[← LLVM.voidPtrType llvmctx, ← getUnsignedType, ← LLVM.voidPtrType llvmctx]
     let fn ← getOrCreateFunctionPrototype (← getLLVMModule) retty fnName argtys
     let fnty ← LLVM.functionType retty argtys
     let zv ← LLVM.buildCall2 builder fnty fn args
@@ -798,10 +903,11 @@ def callLeanCtorGet (builder : LLVM.Builder llvmctx)
     (x i : LLVM.Value llvmctx) (retName : String) : M llvmctx (LLVM.Value llvmctx) := do
   let fnName :=  "lean_ctor_get"
   let retty ← LLVM.voidPtrType llvmctx
-  let argtys := #[ ← LLVM.voidPtrType llvmctx, ← LLVM.i32Type llvmctx]
+  let unsigned ← getUnsignedType
+  let argtys := #[ ← LLVM.voidPtrType llvmctx, unsigned]
   let fnty ← LLVM.functionType retty argtys
   let fn ← getOrCreateFunctionPrototype (← getLLVMModule) retty fnName argtys
-  let i ← LLVM.buildSextOrTrunc builder i (← LLVM.i32Type llvmctx)
+  let i ← LLVM.buildSextOrTrunc builder i unsigned
   LLVM.buildCall2 builder fnty fn  #[x, i] retName
 
 def emitProj (builder : LLVM.Builder llvmctx) (z : VarId) (i : Nat) (x : VarId) : M llvmctx Unit := do
@@ -812,8 +918,8 @@ def emitProj (builder : LLVM.Builder llvmctx) (z : VarId) (i : Nat) (x : VarId) 
 def callLeanCtorGetUsize (builder : LLVM.Builder llvmctx)
     (x i : LLVM.Value llvmctx) (retName : String) : M llvmctx (LLVM.Value llvmctx) := do
   let fnName :=  "lean_ctor_get_usize"
-  let retty ← LLVM.size_tType llvmctx
-  let argtys := #[ ← LLVM.voidPtrType llvmctx, ← LLVM.unsignedType llvmctx]
+  let retty ← getSizeTType
+  let argtys := #[ ← LLVM.voidPtrType llvmctx, ← getUnsignedType]
   let fnty ← LLVM.functionType retty argtys
   let fn ← getOrCreateFunctionPrototype (← getLLVMModule) retty fnName argtys
   LLVM.buildCall2 builder fnty fn  #[x, i] retName
@@ -841,7 +947,7 @@ def emitSProj (builder : LLVM.Builder llvmctx)
     | IRType.uint32  => pure ("lean_ctor_get_uint32", ← LLVM.i32Type llvmctx)
     | IRType.uint64  => pure ("lean_ctor_get_uint64", ← LLVM.i64Type llvmctx)
     | _              => throw s!"Invalid type for lean_ctor_get: '{t}'"
-  let argtys := #[ ← LLVM.voidPtrType llvmctx, ← LLVM.unsignedType llvmctx]
+  let argtys := #[ ← LLVM.voidPtrType llvmctx, ← getUnsignedType]
   let fn ← getOrCreateFunctionPrototype (← getLLVMModule) retty fnName argtys
   let xval ← emitLhsVal builder x
   let offset ← emitOffset builder n offset
@@ -880,15 +986,15 @@ def emitBox (builder : LLVM.Builder llvmctx) (z : VarId) (x : VarId) (xType : IR
   let xv ← emitLhsVal builder x
   let (fnName, argTy, xv) ←
     match xType with
-    | IRType.usize   => pure ("lean_box_usize", ← LLVM.size_tType llvmctx, xv)
+    | IRType.usize   => pure ("lean_box_usize", ← getSizeTType, xv)
     | IRType.uint32  => pure ("lean_box_uint32", ← LLVM.i32Type llvmctx, xv)
-    | IRType.uint64  => pure ("lean_box_uint64", ← LLVM.size_tType llvmctx, xv)
+    | IRType.uint64  => pure ("lean_box_uint64", ← LLVM.i64Type llvmctx, xv)
     | IRType.float   => pure ("lean_box_float", ← LLVM.doubleTypeInContext llvmctx, xv)
     | IRType.float32 => pure ("lean_box_float32", ← LLVM.floatTypeInContext llvmctx, xv)
     | _              =>
          -- sign extend smaller values into i64
-         let xv ← LLVM.buildSext builder xv (← LLVM.size_tType llvmctx)
-         pure ("lean_box", ← LLVM.size_tType llvmctx, xv)
+         let xv ← LLVM.buildSext builder xv (← getSizeTType)
+         pure ("lean_box", ← getSizeTType, xv)
   let retty ← LLVM.voidPtrType llvmctx
   let argtys := #[argTy]
   let fn ← getOrCreateFunctionPrototype (← getLLVMModule) retty fnName argtys
@@ -916,7 +1022,7 @@ def callUnboxForType (builder : LLVM.Builder llvmctx)
      | IRType.uint64  => pure ("lean_unbox_uint64", ← toLLVMType t)
      | IRType.float   => pure ("lean_unbox_float", ← toLLVMType t)
      | IRType.float32 => pure ("lean_unbox_float32", ← toLLVMType t)
-     | _              => pure ("lean_unbox", ← LLVM.size_tType llvmctx)
+     | _              => pure ("lean_unbox", ← getSizeTType)
   let argtys := #[← LLVM.voidPtrType llvmctx ]
   let fn ← getOrCreateFunctionPrototype (← getLLVMModule) retty fnName argtys
   let fnty ← LLVM.functionType retty argtys
@@ -1020,7 +1126,7 @@ def emitTag (builder : LLVM.Builder llvmctx) (x : VarId) (xType : IRType) : M ll
 def emitSet (builder : LLVM.Builder llvmctx) (x : VarId) (i : Nat) (y : Arg) : M llvmctx Unit := do
   let fnName :=  "lean_ctor_set"
   let retty ← LLVM.voidType llvmctx
-  let argtys := #[ ← LLVM.voidPtrType llvmctx, ← LLVM.unsignedType llvmctx , ← LLVM.voidPtrType llvmctx]
+  let argtys := #[ ← LLVM.voidPtrType llvmctx, ← getUnsignedType , ← LLVM.voidPtrType llvmctx]
   let fn ← getOrCreateFunctionPrototype (← getLLVMModule) retty fnName argtys
   let fnty ← LLVM.functionType retty argtys
   let _ ← LLVM.buildCall2 builder fnty fn  #[← emitLhsVal builder x, ← constIntUnsigned i, (← emitArgVal builder y).2]
@@ -1028,7 +1134,7 @@ def emitSet (builder : LLVM.Builder llvmctx) (x : VarId) (i : Nat) (y : Arg) : M
 def emitUSet (builder : LLVM.Builder llvmctx) (x : VarId) (i : Nat) (y : VarId) : M llvmctx Unit := do
   let fnName :=  "lean_ctor_set_usize"
   let retty ← LLVM.voidType llvmctx
-  let argtys := #[ ← LLVM.voidPtrType llvmctx, ← LLVM.unsignedType llvmctx, ← LLVM.size_tType llvmctx]
+  let argtys := #[ ← LLVM.voidPtrType llvmctx, ← getUnsignedType, ← getSizeTType]
   let fn ← getOrCreateFunctionPrototype (← getLLVMModule) retty fnName argtys
   let fnty ← LLVM.functionType retty argtys
   let _ ← LLVM.buildCall2 builder fnty fn  #[← emitLhsVal builder x, ← constIntUnsigned i, (← emitLhsVal builder y)]
@@ -1068,7 +1174,7 @@ def emitSSet (builder : LLVM.Builder llvmctx) (x : VarId) (n : Nat) (offset : Na
   | IRType.uint32  => pure ("lean_ctor_set_uint32", ← LLVM.i32Type llvmctx)
   | IRType.uint64  => pure ("lean_ctor_set_uint64", ← LLVM.i64Type llvmctx)
   | _              => throw s!"invalid type for 'lean_ctor_set': '{t}'"
-  let argtys := #[ ← LLVM.voidPtrType llvmctx, ← LLVM.unsignedType llvmctx, setty]
+  let argtys := #[ ← LLVM.voidPtrType llvmctx, ← getUnsignedType, setty]
   let retty  ← LLVM.voidType llvmctx
   let fn ← getOrCreateFunctionPrototype (← getLLVMModule) retty fnName argtys
   let xv ← emitLhsVal builder x
@@ -1117,7 +1223,9 @@ partial def emitCase (builder : LLVM.Builder llvmctx)
     match alt with
     | Alt.ctor c b  =>
        let destbb ← builderAppendBasicBlock builder s!"case_{xType}_{c.name}_{c.cidx}"
-       LLVM.addCase switch (← constIntSizeT c.cidx) destbb
+       -- Width must match the i64 discriminator above; do not use
+       -- `constIntSizeT` (i32 on wasm32 → LLVM verifier error).
+       LLVM.addCase switch (← constInt64 c.cidx) destbb
        LLVM.positionBuilderAtEnd builder destbb
        emitFnBody builder b
     | Alt.default b =>
@@ -1239,7 +1347,12 @@ def emitDeclAux (mod : LLVM.Module llvmctx) (builder : LLVM.Builder llvmctx) (d 
       if xs.size == 0 then
         LLVM.setVisibility llvmfn LLVM.Visibility.hidden -- "static "
       else
-        LLVM.setDLLStorageClass llvmfn LLVM.DLLStorageClass.export  -- LEAN_EXPORT: make symbol visible to the interpreter
+        -- Cross-compile: only export `@[export]`-annotated decls; see `emitFnDeclAux`.
+        let triple ← getTriple
+        if triple.isEmpty || isExport env f then
+          LLVM.setDLLStorageClass llvmfn LLVM.DLLStorageClass.export
+        else
+          LLVM.setVisibility llvmfn LLVM.Visibility.hidden
       withReader (fun llvmctx => { llvmctx with mainFn := f, mainParams := xs }) do
         set { var2val := default, jp2bb := default : EmitLLVM.State llvmctx } -- flush variable map
         let bb ← LLVM.appendBasicBlockInContext llvmctx llvmfn "entry"
@@ -1282,6 +1395,11 @@ def callPureDeclInitFn (builder : LLVM.Builder llvmctx)
 def emitDeclInit (builder : LLVM.Builder llvmctx)
     (parentFn : LLVM.Value llvmctx) (d : Decl) : M llvmctx Unit := do
   let env ← getEnv
+  let triple ← getTriple
+  -- Cross-compile: 0-arg cache slots don't exist (see `getOrAddFunIdValue`),
+  -- so skip their init writes. IO-unit init functions still run.
+  if !triple.isEmpty && d.params.isEmpty && !(isIOUnitInitFn env d.name) then
+    return
   if isIOUnitInitFn env d.name then do
     let world ← callLeanIOMkWorld builder
     let resv ← callIODeclInitFn builder (← toCName d.name) world
@@ -1354,18 +1472,23 @@ def emitInitFn (mod : LLVM.Module llvmctx) (builder : LLVM.Builder llvmctx) : M 
   LLVM.setDLLStorageClass initFn LLVM.DLLStorageClass.export  -- LEAN_EXPORT
   let entryBB ← LLVM.appendBasicBlockInContext llvmctx initFn "entry"
   LLVM.positionBuilderAtEnd builder entryBB
-  let ginit?ty := ← LLVM.i1Type llvmctx
-  let ginit?slot ← LLVM.getOrAddGlobal mod (modName.mangle ++ "_G_initialized") ginit?ty
-  LLVM.setVisibility ginit?slot LLVM.Visibility.hidden -- static
-  LLVM.setInitializer ginit?slot (← LLVM.constFalse llvmctx)
-  let ginit?v ← LLVM.buildLoad2 builder ginit?ty ginit?slot "init_v"
-  buildIfThen_ builder "isGInitialized" ginit?v
-    (fun builder => do
-      let box0 ← callLeanBox builder (← constIntSizeT 0) "box0"
-      let out ← callLeanIOResultMKOk builder box0 "retval"
-      let _ ← LLVM.buildRet builder out
-      pure ShouldForwardControlFlow.no)
-  LLVM.buildStore builder (← LLVM.constTrue llvmctx) ginit?slot
+  -- The `_G_initialized` `.bss` flag makes repeated calls idempotent on the host;
+  -- skip it on cross-compile (loaders may reject writable segments, and program
+  -- invocations are fresh loads anyway).
+  let triple ← getTriple
+  if triple.isEmpty then
+    let ginit?ty := ← LLVM.i1Type llvmctx
+    let ginit?slot ← LLVM.getOrAddGlobal mod (modName.mangle ++ "_G_initialized") ginit?ty
+    LLVM.setVisibility ginit?slot LLVM.Visibility.hidden -- static
+    LLVM.setInitializer ginit?slot (← LLVM.constFalse llvmctx)
+    let ginit?v ← LLVM.buildLoad2 builder ginit?ty ginit?slot "init_v"
+    buildIfThen_ builder "isGInitialized" ginit?v
+      (fun builder => do
+        let box0 ← callLeanBox builder (← constIntSizeT 0) "box0"
+        let out ← callLeanIOResultMKOk builder box0 "retval"
+        let _ ← LLVM.buildRet builder out
+        pure ShouldForwardControlFlow.no)
+    LLVM.buildStore builder (← LLVM.constTrue llvmctx) ginit?slot
 
   env.imports.forM fun import_ => do
     let builtin ← LLVM.getParam initFn 0
@@ -1396,7 +1519,7 @@ def callLeanInitialize (builder : LLVM.Builder llvmctx) : M llvmctx Unit := do
 
 def callLeanSetupLibUV (builder : LLVM.Builder llvmctx) (argc argv : LLVM.Value llvmctx) : M llvmctx (LLVM.Value llvmctx) := do
   let fnName := "lean_setup_args"
-  let intTy ← LLVM.i32Type llvmctx
+  let intTy ← getUnsignedType
   let charPtrPtrTy ← LLVM.pointerType (← LLVM.pointerType (← LLVM.i8Type llvmctx))
   let argtys := #[intTy, charPtrPtrTy]
   let fnty ← LLVM.functionType charPtrPtrTy argtys
@@ -1511,7 +1634,7 @@ def emitMainFn (mod : LLVM.Module llvmctx) (builder : LLVM.Builder llvmctx) : M 
 
   let argcval ← LLVM.getParam main 0
   let argvval ← LLVM.getParam main 1
-  let truncArgcval ← LLVM.buildSextOrTrunc builder argcval (← LLVM.i32Type llvmctx)
+  let truncArgcval ← LLVM.buildSextOrTrunc builder argcval (← getUnsignedType)
   let argvval ← callLeanSetupLibUV builder truncArgcval argvval
 
   if usesLeanAPI then callLeanInitialize builder else callLeanInitializeRuntimeModule builder
@@ -1535,7 +1658,7 @@ def emitMainFn (mod : LLVM.Module llvmctx) (builder : LLVM.Builder llvmctx) : M 
       if xs.size == 2 then
         let inv ← callLeanBox builder (← constIntSizeT 0) "inv"
         let _ ← LLVM.buildStore builder inv inslot
-        let ity ← LLVM.size_tType llvmctx
+        let ity ← getSizeTType
         let islot ← buildPrologueAlloca builder ity "islot"
         LLVM.buildStore builder argcval islot
         buildWhile_ builder "argv"
@@ -1635,41 +1758,59 @@ partial def getModuleFunctions (mod : LLVM.Module llvmctx) : IO (Array (LLVM.Val
 
 /--
 `emitLLVM` is the entrypoint for the lean shell to code generate LLVM.
+
+`triple` (empty = host) controls codegen; `runtime` selects whether to link
+the host `lean.h.bc` runtime (`"host"`) or emit bitcode for a downstream
+consumer to supply its own (`"none"`).
 -/
 @[export lean_ir_emit_llvm]
-def emitLLVM (env : Environment) (modName : Name) (filepath : String) : IO Unit := do
+def emitLLVM (env : Environment) (modName : Name) (triple : String) (runtime : String)
+    (filepath : String) : IO Unit := do
   LLVM.llvmInitializeTargetInfo
   let llvmctx ← LLVM.createContext
   let module ← LLVM.createModule llvmctx modName.toString
-  let emitLLVMCtx : EmitLLVM.Context llvmctx := {env := env, modName := modName, llvmmodule := module}
+  unless triple.isEmpty do
+    LLVM.setTarget module triple
+    let layout := LLVM.dataLayoutForTriple triple
+    unless layout.isEmpty do
+      LLVM.setDataLayout module layout
+    -- Apply the deny-list only to freestanding cross-compiles (`runtime=none`).
+    -- A hosted cross-compile (`runtime=host`, e.g. `--target=x86_64-linux-gnu`
+    -- against the host runtime) ships these decls and shouldn't be rejected.
+    if runtime == "none" then
+      if let some msg ← LLVM.checkUnsupportedOnTarget env triple then
+        throw <| IO.Error.userError msg
+  let emitLLVMCtx : EmitLLVM.Context llvmctx :=
+    {env := env, modName := modName, llvmmodule := module, triple := triple}
   let initState := { var2val := default, jp2bb := default : EmitLLVM.State llvmctx}
   let out? ← ((EmitLLVM.main (llvmctx := llvmctx)).run initState).run emitLLVMCtx
   match out? with
   | .ok _ => do
-         let membuf ← LLVM.createMemoryBufferWithContentsOfFile (← getLeanHBcPath).toString
-         let modruntime ← LLVM.parseBitcode llvmctx membuf
-         /- It is important that we extract the names here because
-            pointers into modruntime get invalidated by linkModules -/
-         let runtimeGlobals ← (← getModuleGlobals modruntime).mapM (·.getName)
-         let filter func := do
-           -- | Do not insert internal linkage for
-           -- intrinsics such as `@llvm.umul.with.overflow.i64` which clang generates, and also
-           -- for declarations such as `lean_inc_ref_cold` which are externally defined.
-           if (← LLVM.isDeclaration func) then
-             return none
-           else
-             return some (← func.getName)
-         let runtimeFunctions ← (← getModuleFunctions modruntime).filterMapM filter
-         LLVM.linkModules (dest := emitLLVMCtx.llvmmodule) (src := modruntime)
-         -- Mark every global and function as having internal linkage.
-         for name in runtimeGlobals do
-           let some global ← LLVM.getNamedGlobal emitLLVMCtx.llvmmodule name
-              | throw <| IO.Error.userError s!"ERROR: linked module must have global from runtime module: '{name}'"
-           LLVM.setLinkage global LLVM.Linkage.internal
-         for name in runtimeFunctions do
-           let some fn ← LLVM.getNamedFunction emitLLVMCtx.llvmmodule name
-              | throw <| IO.Error.userError s!"ERROR: linked module must have function from runtime module: '{name}'"
-           LLVM.setLinkage fn LLVM.Linkage.internal
+         if runtime != "none" then
+           let membuf ← LLVM.createMemoryBufferWithContentsOfFile (← getLeanHBcPath).toString
+           let modruntime ← LLVM.parseBitcode llvmctx membuf
+           /- It is important that we extract the names here because
+              pointers into modruntime get invalidated by linkModules -/
+           let runtimeGlobals ← (← getModuleGlobals modruntime).mapM (·.getName)
+           let filter func := do
+             -- | Do not insert internal linkage for
+             -- intrinsics such as `@llvm.umul.with.overflow.i64` which clang generates, and also
+             -- for declarations such as `lean_inc_ref_cold` which are externally defined.
+             if (← LLVM.isDeclaration func) then
+               return none
+             else
+               return some (← func.getName)
+           let runtimeFunctions ← (← getModuleFunctions modruntime).filterMapM filter
+           LLVM.linkModules (dest := emitLLVMCtx.llvmmodule) (src := modruntime)
+           -- Mark every global and function as having internal linkage.
+           for name in runtimeGlobals do
+             let some global ← LLVM.getNamedGlobal emitLLVMCtx.llvmmodule name
+                | throw <| IO.Error.userError s!"ERROR: linked module must have global from runtime module: '{name}'"
+             LLVM.setLinkage global LLVM.Linkage.internal
+           for name in runtimeFunctions do
+             let some fn ← LLVM.getNamedFunction emitLLVMCtx.llvmmodule name
+                | throw <| IO.Error.userError s!"ERROR: linked module must have function from runtime module: '{name}'"
+             LLVM.setLinkage fn LLVM.Linkage.internal
          if let some err ← LLVM.verifyModule emitLLVMCtx.llvmmodule then
            throw <| .userError err
          LLVM.writeBitcodeToFile emitLLVMCtx.llvmmodule filepath

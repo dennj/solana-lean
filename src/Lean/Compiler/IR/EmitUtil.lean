@@ -69,6 +69,35 @@ end CollectUsedDecls
 def collectUsedDecls (env : Environment) (decls : List Decl) : Array Name :=
   (CollectUsedDecls.collectDeclLoop decls env).run {} |>.snd.order
 
+namespace CollectDirectCallers
+
+abbrev M := ReaderT (Name × NameSet) (StateM (NameMap NameSet))
+
+@[inline] private def record (callee : Name) : M Unit := do
+  let (caller, targets) ← read
+  if targets.contains callee then
+    modify fun m => m.insert callee (((m.find? callee).getD {}).insert caller)
+
+partial def collectFnBody : FnBody → M Unit
+  | .vdecl _ _ (.fap f _) b
+  | .vdecl _ _ (.pap f _) b => record f *> collectFnBody b
+  | .vdecl _ _ _ b          => collectFnBody b
+  | .jdecl _ _ v b          => collectFnBody v *> collectFnBody b
+  | .case _ _ _ alts        => alts.forM fun alt => collectFnBody alt.body
+  | e                       => do unless e.isTerminal do collectFnBody e.body
+
+end CollectDirectCallers
+
+/-- For each `n` in `targets` reachable from `decls`, return the decls in
+`decls` that directly call `n` via `.fap` / `.pap`. -/
+def collectDirectCallersOf (decls : List Decl) (targets : NameSet) :
+    NameMap NameSet :=
+  (decls.forM go).run {} |>.snd
+where
+  go : Decl → StateM (NameMap NameSet) Unit
+    | .fdecl (f := f) (body := b) .. => CollectDirectCallers.collectFnBody b (f, targets)
+    | _ => pure ()
+
 abbrev VarTypeMap  := Std.HashMap VarId IRType
 abbrev JPParamsMap := Std.HashMap JoinPointId (Array Param)
 
