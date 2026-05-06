@@ -9,6 +9,9 @@ prelude
 public import Lake.Config.Opaque
 public import Lake.Config.LeanLibConfig
 public import Lake.Config.LeanExeConfig
+public import Lake.Config.SolanaProgramConfig
+public import Lake.Config.WasmProgramConfig
+public import Lake.Config.FreestandingProgramConfig
 public import Lake.Config.ExternLibConfig
 public import Lake.Config.InputFileConfig
 import Lake.Util.Name
@@ -21,6 +24,9 @@ public abbrev ConfigType (kind : Name) (pkgName name : Name) : Type :=
   match kind with
   | LeanLib.configKind => LeanLibConfig name
   | LeanExe.configKind => LeanExeConfig name
+  | SolanaProgram.configKind => SolanaProgramConfig name
+  | WasmProgram.configKind => WasmProgramConfig name
+  | FreestandingProgram.configKind => FreestandingProgramConfig name
   | ExternLib.configKind => ExternLibConfig pkgName name
   | .anonymous => OpaqueTargetConfig pkgName name
   | InputFile.configKind => InputFileConfig name
@@ -108,6 +114,33 @@ public abbrev LeanLibDecl := KConfigDecl LeanLib.configKind
 /-- A Lean executable declaration from a configuration written in Lean. -/
 public abbrev LeanExeDecl := KConfigDecl LeanExe.configKind
 
+@[inline] public def ConfigDecl.solanaProgramConfig? (self : ConfigDecl) : Option (SolanaProgramConfig self.name) :=
+  self.config? SolanaProgram.configKind
+
+@[inline] public def NConfigDecl.solanaProgramConfig? (self : NConfigDecl p n) : Option (SolanaProgramConfig n) :=
+  self.config? SolanaProgram.configKind
+
+/-- A Solana SBF program declaration from a configuration written in Lean. -/
+public abbrev SolanaProgramDecl := KConfigDecl SolanaProgram.configKind
+
+@[inline] public def ConfigDecl.wasmProgramConfig? (self : ConfigDecl) : Option (WasmProgramConfig self.name) :=
+  self.config? WasmProgram.configKind
+
+@[inline] public def NConfigDecl.wasmProgramConfig? (self : NConfigDecl p n) : Option (WasmProgramConfig n) :=
+  self.config? WasmProgram.configKind
+
+/-- A WebAssembly program declaration from a configuration written in Lean. -/
+public abbrev WasmProgramDecl := KConfigDecl WasmProgram.configKind
+
+@[inline] public def ConfigDecl.freestandingProgramConfig? (self : ConfigDecl) : Option (FreestandingProgramConfig self.name) :=
+  self.config? FreestandingProgram.configKind
+
+@[inline] public def NConfigDecl.freestandingProgramConfig? (self : NConfigDecl p n) : Option (FreestandingProgramConfig n) :=
+  self.config? FreestandingProgram.configKind
+
+/-- A freestanding cross-target program declaration from a configuration written in Lean. -/
+public abbrev FreestandingProgramDecl := KConfigDecl FreestandingProgram.configKind
+
 @[inline] public def PConfigDecl.externLibConfig?
     (self : PConfigDecl p) : Option (ExternLibConfig p self.name) :=
   self.config? ExternLib.configKind
@@ -146,5 +179,8 @@ public abbrev InputDirDecl := KConfigDecl InputDir.configKind
 
 public instance : TypeName LeanLibDecl := unsafe (.mk _ ``LeanLibDecl)
 public instance : TypeName LeanExeDecl := unsafe (.mk _ ``LeanExeDecl)
+public instance : TypeName SolanaProgramDecl := unsafe (.mk _ ``SolanaProgramDecl)
+public instance : TypeName WasmProgramDecl := unsafe (.mk _ ``WasmProgramDecl)
+public instance : TypeName FreestandingProgramDecl := unsafe (.mk _ ``FreestandingProgramDecl)
 public instance : TypeName InputFileDecl := unsafe (.mk _ ``InputFileDecl)
 public instance : TypeName InputDirDecl := unsafe (.mk _ ``InputDirDecl)

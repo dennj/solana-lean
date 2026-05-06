@@ -292,6 +292,26 @@ opaque printModuletoString (mod : Module ctx) : BaseIO (String)
 @[extern "lean_llvm_print_module_to_file"]
 opaque printModuletoFile (mod : Module ctx) (file : @&String) : BaseIO Unit
 
+@[extern "lean_llvm_set_target"]
+opaque setTarget (mod : Module ctx) (triple : @&String) : BaseIO Unit
+
+@[extern "lean_llvm_set_data_layout"]
+opaque setDataLayout (mod : Module ctx) (layout : @&String) : BaseIO Unit
+
+structure TargetData where
+  private mk :: ptr : USize
+instance : Nonempty TargetData := ⟨{ ptr := default }⟩
+
+@[extern "lean_llvm_create_target_data_from_string"]
+opaque createTargetDataFromString (layout : @&String) : BaseIO TargetData
+
+@[extern "lean_llvm_dispose_target_data"]
+opaque disposeTargetData (td : TargetData) : BaseIO Unit
+
+/-- Pointer size in bytes per the given target data. -/
+@[extern "lean_llvm_pointer_size"]
+opaque pointerSize (td : TargetData) : BaseIO UInt32
+
 @[extern "llvm_count_params"]
 opaque countParams (fn : Value ctx) : BaseIO UInt64
 

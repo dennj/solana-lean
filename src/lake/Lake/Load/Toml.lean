@@ -18,6 +18,9 @@ meta import Lake.Config.LakeConfig
 meta import Lake.Config.InputFileConfig
 meta import Lake.Config.LeanExeConfig
 meta import Lake.Config.LeanLibConfig
+meta import Lake.Config.SolanaProgramConfig
+meta import Lake.Config.WasmProgramConfig
+meta import Lake.Config.FreestandingProgramConfig
 meta import Lake.Config.PackageConfig
 
 open Lean Parser
@@ -408,6 +411,9 @@ local macro "gen_toml_decoders%" : command => do
     (exclude := #[`nativeFacets])
   let cmds ← genDecodeToml cmds ``LeanExeConfig
     (exclude := #[`nativeFacets])
+  let cmds ← genDecodeToml cmds ``SolanaProgramConfig
+  let cmds ← genDecodeToml cmds ``WasmProgramConfig
+  let cmds ← genDecodeToml cmds ``FreestandingProgramConfig
   let cmds ← genDecodeToml cmds ``InputFileConfig
   let cmds ← genDecodeToml cmds ``InputDirConfig
   -- Package
@@ -428,6 +434,9 @@ def decodeTargetDecls
   let r : DecodeTargetState pkg := {}
   let r ← go r LeanLib.keyword LeanLib.configKind LeanLibConfig.decodeToml (by simp)
   let r ← go r LeanExe.keyword LeanExe.configKind LeanExeConfig.decodeToml (by simp)
+  let r ← go r SolanaProgram.keyword SolanaProgram.configKind SolanaProgramConfig.decodeToml (by simp)
+  let r ← go r WasmProgram.keyword WasmProgram.configKind WasmProgramConfig.decodeToml (by simp)
+  let r ← go r FreestandingProgram.keyword FreestandingProgram.configKind FreestandingProgramConfig.decodeToml (by simp)
   let r ← go r InputFile.keyword InputFile.configKind InputFileConfig.decodeToml (by simp)
   let r ← go r InputDir.keyword InputDir.configKind InputDirConfig.decodeToml (by simp)
   return (r.decls, r.map)

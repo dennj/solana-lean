@@ -737,6 +737,10 @@ if(CMAKE_SYSTEM_NAME MATCHES "Windows")
   string(APPEND CMAKE_EXE_LINKER_FLAGS " -Wl,--whole-archive -lleanmanifest -Wl,--no-whole-archive")
 endif()
 
+add_subdirectory(runtime/freestanding)
+add_subdirectory(runtime/sbf)
+add_subdirectory(runtime/wasm)
+
 if(STAGE GREATER 1)
   # reuse C++ parts, which don't change
   add_library(leanrt_initial-exec STATIC IMPORTED)
@@ -962,6 +966,11 @@ endif()
 configure_file("${LEAN_SOURCE_DIR}/bin/leanc.in" "${CMAKE_BINARY_DIR}/leanc.sh" @ONLY)
 if(STAGE GREATER 0 AND NOT CMAKE_SYSTEM_NAME MATCHES "Emscripten")
   configure_file("${LEAN_SOURCE_DIR}/Leanc.lean" "${CMAKE_BINARY_DIR}/leanc/Leanc.lean" @ONLY)
+  file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/leanc/Leanc/CrossTarget")
+  configure_file("${LEAN_SOURCE_DIR}/Leanc/CrossTarget.lean" "${CMAKE_BINARY_DIR}/leanc/Leanc/CrossTarget.lean" COPYONLY)
+  configure_file("${LEAN_SOURCE_DIR}/Leanc/CrossTarget/RiscV64Freestanding.lean" "${CMAKE_BINARY_DIR}/leanc/Leanc/CrossTarget/RiscV64Freestanding.lean" COPYONLY)
+  configure_file("${LEAN_SOURCE_DIR}/Leanc/CrossTarget/SBF.lean" "${CMAKE_BINARY_DIR}/leanc/Leanc/CrossTarget/SBF.lean" COPYONLY)
+  configure_file("${LEAN_SOURCE_DIR}/Leanc/CrossTarget/Wasm.lean" "${CMAKE_BINARY_DIR}/leanc/Leanc/CrossTarget/Wasm.lean" COPYONLY)
   add_custom_target(
     leanc
     ALL

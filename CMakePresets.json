@@ -13,6 +13,15 @@
       "binaryDir": "${sourceDir}/build/release"
     },
     {
+      "name": "release-with-llvm",
+      "displayName": "Release with LLVM backend",
+      "inherits": "release",
+      "cacheVariables": {
+        "LLVM": "ON"
+      },
+      "binaryDir": "${sourceDir}/build/release-with-llvm"
+    },
+    {
       "name": "dev-release",
       "displayName": "Default development optimized build config",
       "cacheVariables": {
@@ -71,6 +80,10 @@
       "configurePreset": "release"
     },
     {
+      "name": "release-with-llvm",
+      "configurePreset": "release-with-llvm"
+    },
+    {
       "name": "dev-release",
       "configurePreset": "dev-release"
     },
@@ -96,6 +109,11 @@
       "name": "release",
       "configurePreset": "release",
       "output": {"outputOnFailure": true, "shortProgress": true}
+    },
+    {
+      "name": "release-with-llvm",
+      "configurePreset": "release-with-llvm",
+      "inherits": "release"
     },
     {
       "name": "dev-release",

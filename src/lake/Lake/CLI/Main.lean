@@ -392,7 +392,10 @@ def parseLangSpec (spec : String) : Except CliError ConfigLang :=
 def parseTemplateLangSpec (spec : String) : Except CliError (InitTemplate × ConfigLang) := do
   match spec.split '.' |>.toStringList with
   | [tmp, lang] => return (← parseTemplateSpec tmp, ← parseLangSpec lang)
-  | [tmp] => return (← parseTemplateSpec tmp, default)
+  | [tmp] =>
+    let tmp ← parseTemplateSpec tmp
+    let lang := if tmp = .solana then .lean else default
+    return (tmp, lang)
   | _ => return default
 
 /-! ## Commands -/
