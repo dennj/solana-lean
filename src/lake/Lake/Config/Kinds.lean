@@ -47,6 +47,33 @@ as the facet kind for modules.
 /-- The type kind for Lean executable configurations. -/
 @[match_pattern] public abbrev LeanExe.configKind := facetKind
 
+/-- The keyword for Solana SBF program declarations. -/
+@[reducible, expose] public def SolanaProgram.keyword : Name := `solana_program
+
+/-- The kind identifier for facets of a Solana SBF program. -/
+@[match_pattern] public abbrev SolanaProgram.facetKind : Name := keyword
+
+/-- The type kind for Solana SBF program configurations. -/
+@[match_pattern] public abbrev SolanaProgram.configKind := facetKind
+
+/-- The keyword for WebAssembly program declarations. -/
+@[reducible, expose] public def WasmProgram.keyword : Name := `wasm_program
+
+/-- The kind identifier for facets of a WebAssembly program. -/
+@[match_pattern] public abbrev WasmProgram.facetKind : Name := keyword
+
+/-- The type kind for WebAssembly program configurations. -/
+@[match_pattern] public abbrev WasmProgram.configKind := facetKind
+
+/-- The keyword for freestanding cross-target program declarations. -/
+@[reducible, expose] public def FreestandingProgram.keyword : Name := `freestanding_program
+
+/-- The kind identifier for facets of a freestanding cross-target program. -/
+@[match_pattern] public abbrev FreestandingProgram.facetKind : Name := keyword
+
+/-- The type kind for freestanding cross-target program configurations. -/
+@[match_pattern] public abbrev FreestandingProgram.configKind := facetKind
+
 /-- The keyword for external library declarations. -/
 @[reducible, expose] public def ExternLib.keyword : Name := `extern_lib
 
@@ -84,6 +111,9 @@ def facetKindForNamespace (ns : Name) : Name :=
   | `Lake.Module => Module.facetKind
   | `Lake.LeanLib => LeanLib.facetKind
   | `Lake.LeanExe => LeanExe.facetKind
+  | `Lake.SolanaProgram => SolanaProgram.facetKind
+  | `Lake.WasmProgram => WasmProgram.facetKind
+  | `Lake.FreestandingProgram => FreestandingProgram.facetKind
   | `Lake.ExternLib => ExternLib.facetKind
   | `Lake.InputFile => InputFile.facetKind
   | `Lake.InputDir => InputDir.facetKind

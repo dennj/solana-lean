@@ -11,6 +11,9 @@ import Lake.Build.Module
 import Lake.Build.Package
 import Lake.Build.Library
 import Lake.Build.Executable
+import Lake.Build.SolanaProgram
+import Lake.Build.WasmProgram
+import Lake.Build.FreestandingProgram
 import Lake.Build.ExternLib
 import Lake.Build.InputFile
 
@@ -25,6 +28,9 @@ public def initFacetConfigs : FacetConfigMap :=
   |> insert Package.initFacetConfigs
   |> insert LeanLib.initFacetConfigs
   |> insert LeanExe.initFacetConfigs
+  |> insert SolanaProgram.initFacetConfigs
+  |> insert WasmProgram.initFacetConfigs
+  |> insert FreestandingProgram.initFacetConfigs
   |> insert ExternLib.initFacetConfigs
   |> insert InputFile.initFacetConfigs
   |> insert InputDir.initFacetConfigs

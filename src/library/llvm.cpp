@@ -44,10 +44,10 @@ extern "C" LEAN_EXPORT obj_res lean_init_llvm() {
     return initialize_Lean_Compiler_IR_EmitLLVM(/*builtin*/ false);
 }
 
-/*  emitLLVM (env : Environment) (modName : Name) (filepath : FilePath) : IO Unit */
-extern "C" obj_res lean_ir_emit_llvm(obj_arg env, obj_arg mod_name, obj_arg filepath);
-extern "C" LEAN_EXPORT obj_res lean_emit_llvm(obj_arg env, obj_arg mod_name, obj_arg filepath) {
-    return lean_ir_emit_llvm(env, mod_name, filepath);
+/*  emitLLVM (env : Environment) (modName : Name) (triple : String) (runtime : String) (filepath : FilePath) : IO Unit */
+extern "C" obj_res lean_ir_emit_llvm(obj_arg env, obj_arg mod_name, obj_arg triple, obj_arg runtime, obj_arg filepath);
+extern "C" LEAN_EXPORT obj_res lean_emit_llvm(obj_arg env, obj_arg mod_name, obj_arg triple, obj_arg runtime, obj_arg filepath) {
+    return lean_ir_emit_llvm(env, mod_name, triple, runtime, filepath);
 }
 }
 
@@ -289,6 +289,63 @@ extern "C" LEAN_EXPORT lean_object *lean_llvm_module_to_string(size_t ctx, size_
     return out;
 #endif  // LEAN_LLVM
 };
+
+extern "C" LEAN_EXPORT lean_object *lean_llvm_set_target(
+    size_t ctx, size_t mod, lean_object *triple) {
+#ifndef LEAN_LLVM
+    lean_always_assert(
+        false && ("Please build a version of Lean4 with -DLLVM=ON to invoke "
+                  "the LLVM backend function."));
+#else
+    LLVMSetTarget(lean_to_Module(mod), lean_string_cstr(triple));
+    return lean_box(0);  // IO Unit
+#endif  // LEAN_LLVM
+}
+
+extern "C" LEAN_EXPORT lean_object *lean_llvm_set_data_layout(
+    size_t ctx, size_t mod, lean_object *layout) {
+#ifndef LEAN_LLVM
+    lean_always_assert(
+        false && ("Please build a version of Lean4 with -DLLVM=ON to invoke "
+                  "the LLVM backend function."));
+#else
+    LLVMSetDataLayout(lean_to_Module(mod), lean_string_cstr(layout));
+    return lean_box(0);  // IO Unit
+#endif  // LEAN_LLVM
+}
+
+extern "C" LEAN_EXPORT size_t lean_llvm_create_target_data_from_string(
+    lean_object *layout) {
+#ifndef LEAN_LLVM
+    lean_always_assert(
+        false && ("Please build a version of Lean4 with -DLLVM=ON to invoke "
+                  "the LLVM backend function."));
+#else
+    LLVMTargetDataRef td = LLVMCreateTargetData(lean_string_cstr(layout));
+    return reinterpret_cast<size_t>(td);
+#endif  // LEAN_LLVM
+}
+
+extern "C" LEAN_EXPORT lean_object *lean_llvm_dispose_target_data(size_t td) {
+#ifndef LEAN_LLVM
+    lean_always_assert(
+        false && ("Please build a version of Lean4 with -DLLVM=ON to invoke "
+                  "the LLVM backend function."));
+#else
+    LLVMDisposeTargetData(reinterpret_cast<LLVMTargetDataRef>(td));
+    return lean_box(0);  // IO Unit
+#endif  // LEAN_LLVM
+}
+
+extern "C" LEAN_EXPORT uint32_t lean_llvm_pointer_size(size_t td) {
+#ifndef LEAN_LLVM
+    lean_always_assert(
+        false && ("Please build a version of Lean4 with -DLLVM=ON to invoke "
+                  "the LLVM backend function."));
+#else
+    return LLVMPointerSize(reinterpret_cast<LLVMTargetDataRef>(td));
+#endif  // LEAN_LLVM
+}
 
 extern "C" LEAN_EXPORT size_t lean_llvm_add_function(
     size_t ctx, size_t mod, lean_object *name, size_t type) {

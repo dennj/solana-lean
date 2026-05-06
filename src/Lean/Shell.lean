@@ -43,11 +43,12 @@ If Lean lacks LLVM support, this function will fail with an assertion violation.
 opaque initLLVM : IO Unit
 
 /--
-Emits LLVM bitcode for the module.
-Before calling this function, the LLVM subsystem must first be successfully initialized.
+Emits LLVM bitcode for the module. The LLVM subsystem must be initialized
+beforehand. `triple` (empty = host) selects the codegen target; `runtime`
+selects which Lean runtime is linked (`"host"` or `"none"`).
 -/
 @[extern "lean_emit_llvm"]
-opaque emitLLVM (env : Environment) (modName : Name) (filepath : FilePath) : IO Unit
+opaque emitLLVM (env : Environment) (modName : Name) (triple : String) (runtime : String) (filepath : FilePath) : IO Unit
 
 /-- Whether Lean was built with an address sanitizer enabled. -/
 @[extern "lean_internal_has_address_sanitizer"]
@@ -150,6 +151,8 @@ def displayHelp (useStderr : Bool) : IO Unit := do
   out.putStrLn    "  -i, --i=iname          create ilean file"
   out.putStrLn    "  -c, --c=fname          name of the C output file"
   out.putStrLn    "  -b, --bc=fname         name of the LLVM bitcode file"
+  out.putStrLn    "      --target=triple    LLVM target triple to cross-compile for (empty = host)"
+  out.putStrLn    "                         (e.g. 'riscv64-unknown-none-elf', 'wasm32-wasip1', 'sbf-solana-solana')"
   out.putStrLn    "      --stdin            take input from stdin"
   out.putStrLn    "  -R, --root=dir         set package root directory from which the module name\n"
   out.putStrLn    "                         of the input file is calculated\n"
@@ -287,6 +290,12 @@ def setConfigOption (opts : Options) (arg : String) : IO Options := do
       -- This (minor) duplication may be resolved later.
       return opts.set name val
 
+private def setTarget (opts : ShellOptions) (triple : String) : ShellOptions :=
+  let leanOpts := Compiler.compiler.target.set opts.leanOpts triple
+  let leanOpts := Compiler.compiler.runtime.set leanOpts "none"
+  let leanOpts := Compiler.compiler.crossImports.set leanOpts "Std.Freestanding.Unsupported"
+  { opts with forwardedArgs := opts.forwardedArgs.push s!"--target={triple}", leanOpts }
+
 /--
 Process a command-line option parsed by the C++ shell.
 
@@ -329,6 +338,8 @@ def ShellOptions.process (opts : ShellOptions)
     return {opts with cFileName? := ← checkOptArg "c" optArg?}
   | 'b' => -- `-b, --bc=fname`
     return {opts with bcFileName? := ← checkOptArg "b" optArg?}
+  | 'Y' => -- `--target=<triple>`
+    return setTarget opts (← checkOptArg "target" optArg?)
   | 's' => -- `-s, --tstack=num`
     let arg ← checkOptArg "s" optArg?
     let some stackSize := arg.toNat?
@@ -570,8 +581,13 @@ def shellMain (args : List String) (opts : ShellOptions) : IO UInt32 := do
         out.write data.toUTF8
     if let some bc := opts.bcFileName? then
       initLLVM
-      profileitIO "LLVM code generation" opts.leanOpts do
-        emitLLVM env mainModuleName bc
+      let mergedOpts := match setup? with
+        | some s => opts.leanOpts.mergeBy (fun _ _ hOpt => hOpt) s.options.toOptions
+        | none   => opts.leanOpts
+      profileitIO "LLVM code generation" mergedOpts do
+        let triple  := Compiler.compiler.target.get mergedOpts
+        let runtime := Compiler.compiler.runtime.get mergedOpts
+        emitLLVM env mainModuleName triple runtime bc
   displayCumulativeProfilingTimes
   if Internal.hasAddressSanitizer () then
     return if env?.isSome then 0 else 1

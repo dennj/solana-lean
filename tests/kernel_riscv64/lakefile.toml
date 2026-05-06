@@ -1,0 +1,11 @@
+name = "lean_kernel_riscv64"
+srcDir = "."
+defaultTargets = ["Kernel", "KernelMain"]
+
+[[lean_lib]]
+name = "Kernel"
+globs = ["Kernel.+"]
+
+[[lean_lib]]
+name = "KernelMain"
+roots = ["Main"]

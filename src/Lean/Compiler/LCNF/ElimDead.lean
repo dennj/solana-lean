@@ -7,11 +7,12 @@ module
 
 prelude
 public import Lean.Compiler.LCNF.PassManager
+public import Lean.Compiler.NeverExtractAttr
 
 /-!
 This module implements a pass that does a syntactic use-def check for all let/fun/jp bindings and
-removes them if they are unused. Note that in impure mode not all unused let bindings can be removed safely
-so we opt for a safe subset.
+removes them if they are unused, except calls to `@[never_extract]`-tagged decls (whose
+side effect is the reason for the call).
 -/
 
 namespace Lean.Compiler.LCNF
@@ -51,13 +52,19 @@ abbrev collectLetValueM (e : LetValue pu) : M Unit :=
 abbrev collectFVarM (fvarId : FVarId) : M Unit :=
   modify (·.insert fvarId)
 
-def LetValue.safeToElim (val : LetValue pu) : Bool :=
-  match pu with
+/-- Whether the let-binding's value can be eliminated when its result is unused.
+Calls to `@[never_extract]`-tagged decls are never safe to drop regardless of phase. -/
+public def LetValue.safeToElim (env : Environment) (val : LetValue pu) : Bool :=
+  let neverExtract := match val with
+    | .const n .. | .fap n .. | .pap n .. => hasNeverExtractAttribute env n
+    | _ => false
+  if neverExtract then false
+  else match pu with
   | .pure => true
   | .impure =>
     match val with
     | .ctor .. | .reset .. | .reuse .. | .oproj .. | .uproj .. | .sproj .. | .lit .. | .pap ..
-    | .box .. | .unbox .. | .erased .. | .isShared .. => true
+    | .box .. | .unbox .. | .erased .. | .isShared .. | .const .. => true
     -- 0-ary full applications are considered constants
     | .fap _ args => args.isEmpty
     | .fvar .. => false
@@ -72,7 +79,7 @@ partial def Code.elimDead (code : Code pu) : M (Code pu) := do
   match code with
   | .let decl k =>
     let k ← k.elimDead
-    if (← get).contains decl.fvarId || !decl.value.safeToElim then
+    if (← get).contains decl.fvarId || !(LetValue.safeToElim (← getEnv) decl.value) then
       /- Remark: we don't need to collect `decl.type` because LCNF local declarations do not occur in types. -/
       collectLetValueM decl.value
       return code.updateCont! k

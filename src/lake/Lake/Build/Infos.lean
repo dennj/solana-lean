@@ -8,6 +8,9 @@ module
 prelude
 public import Lake.Build.Info
 public import Lake.Config.LeanExe
+public import Lake.Config.SolanaProgram
+public import Lake.Config.WasmProgram
+public import Lake.Config.FreestandingProgram
 public import Lake.Config.ExternLib
 public import Lake.Config.InputFile
 meta import all Lake.Build.Data
@@ -34,6 +37,15 @@ public abbrev ConfigTarget.key (self : ConfigTarget kind) : BuildKey :=
 public abbrev LeanExe.exeBuildKey (self : LeanExe) : BuildKey :=
   self.key.facet exeFacet
 
+public abbrev SolanaProgram.soBuildKey (self : SolanaProgram) : BuildKey :=
+  self.key.facet soFacet
+
+public abbrev WasmProgram.wasmBuildKey (self : WasmProgram) : BuildKey :=
+  self.key.facet wasmFacet
+
+public abbrev FreestandingProgram.elfBuildKey (self : FreestandingProgram) : BuildKey :=
+  self.key.facet elfFacet
+
 public abbrev ExternLib.staticBuildKey (self : ExternLib) : BuildKey :=
   self.key.facet staticFacet
 
@@ -56,6 +68,9 @@ data_type module : Module
 data_type package : Package
 data_type lean_lib : LeanLib
 data_type lean_exe : LeanExe
+data_type solana_program : SolanaProgram
+data_type wasm_program : WasmProgram
+data_type freestanding_program : FreestandingProgram
 data_type extern_lib : ExternLib
 data_type input_file : InputFile
 data_type input_dir : InputDir
@@ -326,6 +341,45 @@ public abbrev LeanExe.facetCore (facet : Name) (self : LeanExe) : BuildInfo :=
 @[inherit_doc exeFacet]
 public abbrev LeanExe.exe (self : LeanExe) : BuildInfo :=
   self.facetCore LeanExe.exeFacet
+
+/-! #### Solana Program Infos -/
+
+/-
+Build info for applying the specified facet to the Solana program.
+It is the user's obligation to ensure the facet in question is a Solana program facet.
+-/
+public abbrev SolanaProgram.facetCore (facet : Name) (self : SolanaProgram) : BuildInfo :=
+  .facet self.key facetKind (toFamily self) facet
+
+@[inherit_doc soFacet]
+public abbrev SolanaProgram.so (self : SolanaProgram) : BuildInfo :=
+  self.facetCore SolanaProgram.soFacet
+
+/-! #### WebAssembly Program Infos -/
+
+/-
+Build info for applying the specified facet to the WebAssembly program.
+It is the user's obligation to ensure the facet in question is a WebAssembly program facet.
+-/
+public abbrev WasmProgram.facetCore (facet : Name) (self : WasmProgram) : BuildInfo :=
+  .facet self.key facetKind (toFamily self) facet
+
+@[inherit_doc wasmFacet]
+public abbrev WasmProgram.wasm (self : WasmProgram) : BuildInfo :=
+  self.facetCore WasmProgram.wasmFacet
+
+/-! #### Freestanding Program Infos -/
+
+/-
+Build info for applying the specified facet to the freestanding program.
+It is the user's obligation to ensure the facet in question is a freestanding program facet.
+-/
+public abbrev FreestandingProgram.facetCore (facet : Name) (self : FreestandingProgram) : BuildInfo :=
+  .facet self.key facetKind (toFamily self) facet
+
+@[inherit_doc elfFacet]
+public abbrev FreestandingProgram.elf (self : FreestandingProgram) : BuildInfo :=
+  self.facetCore FreestandingProgram.elfFacet
 
 /-! #### External Library Infos -/
 

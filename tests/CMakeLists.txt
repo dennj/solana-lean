@@ -331,6 +331,26 @@ add_test_pile(server *.lean)
 add_test_pile(server_interactive *.lean)
 
 add_test_dir(../doc/examples/compiler)
+add_test_dir(solana)
+add_test_dir(cross_target)
+add_test_dir(wasm)
+add_test_dir(kernel_riscv64)
+add_test_dir(stdlib_probes)
+
+# Live-deploy gate. Spawns a local solana-test-validator, deploys each
+# Lean-compiled .so, and asserts observable on-chain behaviour. Gated
+# on LEAN_SBF_DEPLOY_TEST=1 — full run is ~30s and requires
+# solana-test-validator + bun + @solana/web3.js cache. The script
+# skips itself with a clear message if any of those is missing.
+add_test(
+  NAME solana_deploy
+  WORKING_DIRECTORY "${LEAN_SOURCE_DIR}/../tests/solana"
+  COMMAND bash "${WITH_TEST_ENV}" "${LEAN_SOURCE_DIR}/../tests/solana/deploy_test.sh"
+)
+set_tests_properties(solana_deploy PROPERTIES
+  TIMEOUT 300
+  RUN_SERIAL TRUE
+)
 add_test_dir(bench/build BENCH PART1)
 add_test_dir(bench/vcgen BENCH PART2)
 add_test_dir(bench/size BENCH PART1)

@@ -14,3 +14,5 @@ public import Std.Time
 public import Std.Tactic
 public import Std.Internal
 public import Std.Net
+public import Std.Solana
+public import Std.Wasm
