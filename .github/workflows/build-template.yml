@@ -99,7 +99,7 @@ jobs:
         if: matrix.cmultilib
       - name: Cache
         id: restore-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           # NOTE: must be in sync with `save` below
           path: |
@@ -240,7 +240,7 @@ jobs:
           done
       - name: Save Cache
         if: always() && steps.restore-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           # NOTE: must be in sync with `restore` above
           path: |
