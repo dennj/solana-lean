@@ -1,0 +1,6 @@
+name = "colosseum"
+defaultTargets = ["Colosseum"]
+
+[[solana_program]]
+name = "Colosseum"
+programName = "Colosseum"
