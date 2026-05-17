@@ -4,7 +4,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 
 Freestanding subset of the Lean runtime for cross-compile targets that
 ship without libc and without the host's `lean.h.bc` runtime: bump
-allocator, refcount no-ops, boxing primitives, ctor allocation/accessors,
+allocator, single-threaded refcount metadata, boxing primitives, ctor allocation/accessors,
 IO-result wrappers, strings, arrays, scalar arrays, and a bounded
 small-Nat / Int subset.
 
@@ -71,6 +71,17 @@ uint64_t lean_strlen(const char *s) {
     while (s[n]) ++n;
     return n;
 }
+
+typedef struct {
+    lean_object   m_header;
+    void *        m_fun;
+    uint16_t      m_arity;
+    uint16_t      m_num_fixed;
+    lean_object * m_objs[];
+} lean_closure_object;
+
+#define LEAN_MAX_CTOR_TAG 244
+#define LEAN_TAG_CLOSURE 245
 
 /* ===========================================================================
    libc-free `mem*` primitives
@@ -278,18 +289,118 @@ unsigned lean_obj_tag(void *o) {
 }
 
 /* ===========================================================================
-   Reference counting (no-op for short-lived restricted-runtime programs)
-   =========================================================================*/
+   Reference counting
+   ===========================================================================
+   Freestanding targets still use a bump allocator, so unreachable objects are
+   not returned to the heap. We nevertheless maintain Lean's single-threaded RC
+   metadata and recursively drop owned references when an object's RC reaches
+   zero. This preserves the ownership/exclusivity invariant used by generated
+   code for copy-on-write arrays, byte arrays, and future linear structures.
+*/
 
-void lean_inc(void *o)             { (void)o; }
-void lean_inc_ref(void *o)         { (void)o; }
-void lean_inc_n(void *o, size_t n) { (void)o; (void)n; }
-void lean_inc_ref_n(void *o, size_t n) { (void)o; (void)n; }
-void lean_dec_ref(void *o)         { (void)o; }
-void lean_dec(void *o)             { (void)o; }
-void lean_mark_persistent(void *o) { (void)o; }
-uint8_t lean_is_exclusive(void *o) { (void)o; return 0; }
-void lean_del_object(void *o)      { (void)o; }
+static void lean_freestanding_dec_ref_cold(void *o);
+static void lean_freestanding_mark_persistent_rec(void *o);
+
+uint8_t lean_is_scalar(void *o) {
+    return lean_freestanding_is_scalar(o) ? 1 : 0;
+}
+
+void lean_inc_ref_n(void *o, size_t n) {
+    if (o == 0 || n == 0) return;
+    lean_object *obj = (lean_object *)o;
+    if (obj->m_rc > 0) obj->m_rc += (int)n;
+}
+
+void lean_inc_ref(void *o) {
+    lean_inc_ref_n(o, 1);
+}
+
+void lean_inc_n(void *o, size_t n) {
+    if (!lean_freestanding_is_scalar(o)) lean_inc_ref_n(o, n);
+}
+
+void lean_inc(void *o) {
+    if (!lean_freestanding_is_scalar(o)) lean_inc_ref(o);
+}
+
+void lean_dec_ref(void *o) {
+    if (o == 0) return;
+    lean_object *obj = (lean_object *)o;
+    if (obj->m_rc > 1) {
+        obj->m_rc--;
+    } else if (obj->m_rc == 1) {
+        lean_freestanding_dec_ref_cold(o);
+    }
+}
+
+void lean_dec(void *o) {
+    if (!lean_freestanding_is_scalar(o)) lean_dec_ref(o);
+}
+
+void lean_mark_persistent(void *o) {
+    if (o != 0 && !lean_freestanding_is_scalar(o)) lean_freestanding_mark_persistent_rec(o);
+}
+
+uint8_t lean_is_exclusive(void *o) {
+    if (o == 0) return 0;
+    if (lean_freestanding_is_scalar(o)) return 0;
+    return ((lean_object *)o)->m_rc == 1;
+}
+
+uint8_t lean_is_exclusive_obj(void *o) {
+    return lean_is_exclusive(o);
+}
+
+uint8_t lean_is_shared(void *o) {
+    if (o == 0) return 0;
+    if (lean_freestanding_is_scalar(o)) return 0;
+    return ((lean_object *)o)->m_rc > 1;
+}
+
+void lean_del_object(void *o) { (void)o; }
+
+static void lean_freestanding_dec_ref_cold(void *o) {
+    lean_object *obj = (lean_object *)o;
+    obj->m_rc = 0;
+    if (obj->m_tag <= LEAN_MAX_CTOR_TAG) {
+        lean_ctor_object *c = (lean_ctor_object *)o;
+        for (unsigned i = 0; i < obj->m_other; ++i) lean_dec(c->m_objs[i]);
+    } else if (obj->m_tag == LEAN_TAG_ARRAY) {
+        lean_array_object *a = (lean_array_object *)o;
+        for (size_t i = 0; i < a->m_size; ++i) lean_dec(a->m_data[i]);
+    } else if (obj->m_tag == LEAN_TAG_CLOSURE) {
+        lean_closure_object *c = (lean_closure_object *)o;
+        for (uint16_t i = 0; i < c->m_num_fixed; ++i) lean_dec(c->m_objs[i]);
+    }
+}
+
+static void lean_freestanding_mark_persistent_rec(void *o) {
+    lean_object *obj = (lean_object *)o;
+    if (obj->m_rc == 0) return;
+    obj->m_rc = 0;
+    if (obj->m_tag <= LEAN_MAX_CTOR_TAG) {
+        lean_ctor_object *c = (lean_ctor_object *)o;
+        for (unsigned i = 0; i < obj->m_other; ++i) {
+            if (!lean_freestanding_is_scalar(c->m_objs[i])) {
+                lean_freestanding_mark_persistent_rec(c->m_objs[i]);
+            }
+        }
+    } else if (obj->m_tag == LEAN_TAG_ARRAY) {
+        lean_array_object *a = (lean_array_object *)o;
+        for (size_t i = 0; i < a->m_size; ++i) {
+            if (!lean_freestanding_is_scalar(a->m_data[i])) {
+                lean_freestanding_mark_persistent_rec(a->m_data[i]);
+            }
+        }
+    } else if (obj->m_tag == LEAN_TAG_CLOSURE) {
+        lean_closure_object *c = (lean_closure_object *)o;
+        for (uint16_t i = 0; i < c->m_num_fixed; ++i) {
+            if (!lean_freestanding_is_scalar(c->m_objs[i])) {
+                lean_freestanding_mark_persistent_rec(c->m_objs[i]);
+            }
+        }
+    }
+}
 
 /* ===========================================================================
    IO result types
@@ -344,15 +455,6 @@ void *initialize_Std_Freestanding_Unsupported(uint8_t builtin, void *world) {
     return lean_io_result_mk_ok(lean_box(0));
 }
 
-typedef struct {
-    lean_object   m_header;
-    void *        m_fun;
-    uint16_t      m_arity;
-    uint16_t      m_num_fixed;
-    lean_object * m_objs[];
-} lean_closure_object;
-
-#define LEAN_TAG_CLOSURE 245
 #define LEAN_FREESTANDING_MAX_CLOSURE_ARITY 8
 
 void *lean_alloc_closure(void *fun, unsigned arity, unsigned num_fixed) {
@@ -528,7 +630,7 @@ void *_init_l_ByteArray_empty(void) {
         sizeof(lean_sarray_object));
     o->m_header.m_rc = 1;
     o->m_header.m_cs_sz = 0;
-    o->m_header.m_other = 0;
+    o->m_header.m_other = 1;
     o->m_header.m_tag = LEAN_TAG_SCALAR_ARRAY;
     o->m_size = 0;
     o->m_capacity = 0;
@@ -852,40 +954,6 @@ uint32_t lean_unbox_uint32(void *p) {
     return (uint32_t)lean_unbox(p);
 }
 
-/* Fast indexed read on a known-in-bounds `ByteArray` / `Array α`. The
-   host runtime keeps `_fget` variants that skip the bounds check; we
-   trust the call site since Lean's `@&` borrowing has already
-   established the index is valid. The `i` argument is a *boxed Nat*
-   (matching the host inline `lean_byte_array_fget(b_lean_obj_arg a,
-   b_lean_obj_arg i)` in `include/lean/lean.h`); the unboxed-index
-   variants are `_uget`. */
-uint8_t lean_byte_array_fget(void *a, void *i) {
-    return ((lean_sarray_object *)a)->m_data[lean_unbox(i)];
-}
-
-void *lean_array_fget(void *a, void *i) {
-    return ((lean_array_object *)a)->m_data[lean_unbox(i)];
-}
-
-void *lean_array_fget_borrowed(void *a, void *i) {
-    return ((lean_array_object *)a)->m_data[lean_unbox(i)];
-}
-
-void *lean_array_get_borrowed(void *fallback, void *a, void *i) {
-    if (((uintptr_t)i & 1u) == 1u) {
-        size_t idx = lean_unbox(i);
-        lean_array_object *arr = (lean_array_object *)a;
-        if (idx < arr->m_size) return arr->m_data[idx];
-    }
-    return fallback;
-}
-
-/* `Array.size` returns a Lean Nat; the host inlines to `lean_box(m_size)`. */
-void *lean_array_size(void *a) {
-    return lean_box(((lean_array_object *)a)->m_size);
-}
-
-
 uint8_t lean_string_dec_eq(void *s1, void *s2) {
     if (s1 == s2) return 1;
     lean_string_object *a = (lean_string_object *)s1;
@@ -901,11 +969,8 @@ uint8_t lean_string_dec_eq(void *s1, void *s2) {
    Arrays
    ===========================================================================
    `Array α` is a heap-allocated growable buffer of `lean_object *` slots.
-   On restricted-runtime targets we treat refcounting as a no-op
-   (transactions / programs are short-lived), so `array_push` always
-   allocates a fresh copy when capacity is exceeded and returns it; the
-   old buffer is leaked but stays within the bump-allocated heap region
-   for the duration of the program.
+   Mutating operations follow Lean's standard copy-on-write discipline:
+   modify in place only when the array is exclusive, otherwise copy first.
 */
 
 static lean_array_object *lean_freestanding_alloc_array(size_t size, size_t capacity) {
@@ -917,6 +982,14 @@ static lean_array_object *lean_freestanding_alloc_array(size_t size, size_t capa
     o->m_size = size;
     o->m_capacity = capacity;
     return o;
+}
+
+size_t lean_array_size(void *a) {
+    return ((lean_array_object *)a)->m_size;
+}
+
+size_t lean_array_capacity(void *a) {
+    return ((lean_array_object *)a)->m_capacity;
 }
 
 void *lean_alloc_array(size_t size, size_t capacity) {
@@ -938,85 +1011,162 @@ void *lean_array_get_size(void *a) {
     return lean_box(((lean_array_object *)a)->m_size);
 }
 
+void *lean_array_fget(void *a, void *i) {
+    lean_object *r = ((lean_array_object *)a)->m_data[lean_unbox(i)];
+    lean_inc(r);
+    return r;
+}
+
+void *lean_array_fget_borrowed(void *a, void *i) {
+    return ((lean_array_object *)a)->m_data[lean_unbox(i)];
+}
+
+void *lean_array_get(void *fallback, void *a, void *i) {
+    if (lean_freestanding_is_scalar(i)) {
+        size_t idx = lean_unbox(i);
+        lean_array_object *arr = (lean_array_object *)a;
+        if (idx < arr->m_size) {
+            lean_object *r = arr->m_data[idx];
+            lean_inc(r);
+            return r;
+        }
+    }
+    lean_inc(fallback);
+    return fallback;
+}
+
+void *lean_array_get_borrowed(void *fallback, void *a, void *i) {
+    if (lean_freestanding_is_scalar(i)) {
+        size_t idx = lean_unbox(i);
+        lean_array_object *arr = (lean_array_object *)a;
+        if (idx < arr->m_size) return arr->m_data[idx];
+    }
+    return fallback;
+}
+
 void *lean_array_uget_borrowed(void *a, size_t i) {
     return ((lean_array_object *)a)->m_data[i];
 }
 
 void *lean_array_uget(void *a, size_t i) {
-    /* On the host this also `lean_inc`s the result; on restricted runtimes
-       refcounting is a no-op, so the borrow and owned forms coincide. */
-    return ((lean_array_object *)a)->m_data[i];
-}
-
-void *lean_array_uset(void *a, size_t i, void *v) {
-    /* On the host this requires the array to be exclusively owned and
-       may copy. With refcount-no-op semantics we mutate in place. */
-    ((lean_array_object *)a)->m_data[i] = (lean_object *)v;
-    return a;
-}
-
-void *lean_array_set(void *a, void *i, void *v) {
-    lean_array_object *src = (lean_array_object *)a;
-    size_t idx = lean_unbox(i);
-    if (idx >= src->m_size) return a;
-    lean_array_object *dst = lean_freestanding_alloc_array(src->m_size, src->m_capacity);
-    for (size_t k = 0; k < src->m_size; ++k) dst->m_data[k] = src->m_data[k];
-    dst->m_data[idx] = (lean_object *)v;
-    return dst;
-}
-
-void *lean_mk_array(void *n, void *v) {
-    size_t cnt = lean_unbox(n);
-    lean_array_object *dst = lean_freestanding_alloc_array(cnt, cnt);
-    for (size_t k = 0; k < cnt; ++k) dst->m_data[k] = (lean_object *)v;
-    return dst;
-}
-
-void *lean_byte_array_set(void *a, void *i, uint8_t v) {
-    lean_sarray_object *src = (lean_sarray_object *)a;
-    size_t idx = lean_unbox(i);
-    if (idx >= src->m_size) return a;
-    lean_sarray_object *dst = (lean_sarray_object *)lean_alloc_object(
-        sizeof(lean_sarray_object) + src->m_capacity);
-    dst->m_header.m_rc = 1;
-    dst->m_header.m_cs_sz = 0;
-    dst->m_header.m_other = 0;
-    dst->m_header.m_tag = LEAN_TAG_SCALAR_ARRAY;
-    dst->m_size = src->m_size;
-    dst->m_capacity = src->m_capacity;
-    for (size_t k = 0; k < src->m_size; ++k) dst->m_data[k] = src->m_data[k];
-    dst->m_data[idx] = v;
-    return dst;
-}
-
-void *lean_array_push(void *a, void *v) {
-    lean_array_object *src = (lean_array_object *)a;
-    if (src->m_capacity > src->m_size) {
-        src->m_data[src->m_size] = (lean_object *)v;
-        src->m_size++;
-        return src;
-    }
-    /* Grow: classic 2× expansion (with +1 floor for empty arrays). */
-    size_t new_cap = src->m_capacity == 0 ? 4 : src->m_capacity * 2;
-    lean_array_object *dst = lean_freestanding_alloc_array(src->m_size + 1, new_cap);
-    for (size_t i = 0; i < src->m_size; ++i) dst->m_data[i] = src->m_data[i];
-    dst->m_data[src->m_size] = (lean_object *)v;
-    return dst;
+    lean_object *r = ((lean_array_object *)a)->m_data[i];
+    lean_inc(r);
+    return r;
 }
 
 void *lean_copy_expand_array(void *a, uint8_t expand) {
     lean_array_object *src = (lean_array_object *)a;
-    size_t new_cap = expand ?
-        (src->m_capacity == 0 ? 4 : src->m_capacity * 2) :
-        src->m_capacity;
+    size_t new_cap = src->m_capacity;
+    if (expand) new_cap = (new_cap + 1) * 2;
     if (new_cap < src->m_size) new_cap = src->m_size;
     lean_array_object *dst = lean_freestanding_alloc_array(src->m_size, new_cap);
-    for (size_t i = 0; i < src->m_size; ++i) dst->m_data[i] = src->m_data[i];
+    if (lean_is_exclusive(a)) {
+        for (size_t i = 0; i < src->m_size; ++i) dst->m_data[i] = src->m_data[i];
+        src->m_header.m_rc = 0;
+    } else {
+        for (size_t i = 0; i < src->m_size; ++i) {
+            dst->m_data[i] = src->m_data[i];
+            lean_inc(dst->m_data[i]);
+        }
+        lean_dec(a);
+    }
     return dst;
 }
 
 void *lean_copy_expand_array_nonlinear(void *a, uint8_t expand) {
     return lean_copy_expand_array(a, expand);
+}
+
+static lean_array_object *lean_freestanding_ensure_exclusive_array(void *a) {
+    if (lean_is_exclusive(a)) return (lean_array_object *)a;
+    return (lean_array_object *)lean_copy_expand_array_nonlinear(a, 0);
+}
+
+void *lean_array_uset(void *a, size_t i, void *v) {
+    lean_array_object *r = lean_freestanding_ensure_exclusive_array(a);
+    lean_dec(r->m_data[i]);
+    r->m_data[i] = (lean_object *)v;
+    return r;
+}
+
+void *lean_array_fset(void *a, void *i, void *v) {
+    return lean_array_uset(a, lean_unbox(i), v);
+}
+
+void *lean_array_set(void *a, void *i, void *v) {
+    if (!lean_freestanding_is_scalar(i)) {
+        lean_dec(v);
+        return a;
+    }
+    size_t idx = lean_unbox(i);
+    if (idx >= ((lean_array_object *)a)->m_size) {
+        lean_dec(v);
+        return a;
+    }
+    return lean_array_uset(a, idx, v);
+}
+
+void *lean_array_pop(void *a) {
+    lean_array_object *r = lean_freestanding_ensure_exclusive_array(a);
+    if (r->m_size == 0) return r;
+    r->m_size--;
+    lean_dec(r->m_data[r->m_size]);
+    return r;
+}
+
+void *lean_array_uswap(void *a, size_t i, size_t j) {
+    lean_array_object *r = lean_freestanding_ensure_exclusive_array(a);
+    lean_object *tmp = r->m_data[i];
+    r->m_data[i] = r->m_data[j];
+    r->m_data[j] = tmp;
+    return r;
+}
+
+void *lean_array_fswap(void *a, void *i, void *j) {
+    return lean_array_uswap(a, lean_unbox(i), lean_unbox(j));
+}
+
+void *lean_array_swap(void *a, void *i, void *j) {
+    if (!lean_freestanding_is_scalar(i) || !lean_freestanding_is_scalar(j)) return a;
+    size_t ui = lean_unbox(i);
+    size_t uj = lean_unbox(j);
+    lean_array_object *arr = (lean_array_object *)a;
+    if (ui >= arr->m_size || uj >= arr->m_size) return a;
+    return lean_array_uswap(a, ui, uj);
+}
+
+void *lean_mk_array(void *n, void *v) {
+    if (!lean_freestanding_is_scalar(n)) {
+        lean_freestanding_nat_panic("lean-freestanding: mk_array size exceeds small-Nat cap");
+    }
+    size_t cnt = lean_unbox(n);
+    lean_array_object *dst = lean_freestanding_alloc_array(cnt, cnt);
+    for (size_t k = 0; k < cnt; ++k) dst->m_data[k] = (lean_object *)v;
+    if (cnt == 0) {
+        lean_dec(v);
+    } else if (cnt > 1) {
+        lean_inc_n(v, cnt - 1);
+    }
+    return dst;
+}
+
+void *lean_array_push(void *a, void *v) {
+    lean_array_object *src = (lean_array_object *)a;
+    lean_array_object *r;
+    if (lean_is_exclusive(a)) {
+        r = src->m_capacity > src->m_size
+            ? src
+            : (lean_array_object *)lean_copy_expand_array(a, 1);
+    } else {
+        uint8_t expand = src->m_capacity < 2 * src->m_size + 1;
+        r = (lean_array_object *)lean_copy_expand_array_nonlinear(a, expand);
+    }
+    if (r->m_capacity <= r->m_size) {
+        lean_freestanding_panic("array_push capacity invariant", r->m_capacity, r->m_size);
+    }
+    r->m_data[r->m_size] = (lean_object *)v;
+    r->m_size++;
+    return r;
 }
 
 /* ===========================================================================
@@ -1040,8 +1190,63 @@ static lean_sarray_object *lean_freestanding_alloc_sarray(unsigned elem_size, si
     return o;
 }
 
+static unsigned lean_freestanding_sarray_elem_size(void *a) {
+    unsigned elem_size = ((lean_object *)a)->m_other;
+    return elem_size == 0 ? 1 : elem_size;
+}
+
+size_t lean_sarray_size(void *a) {
+    return ((lean_sarray_object *)a)->m_size;
+}
+
+size_t lean_sarray_capacity(void *a) {
+    return ((lean_sarray_object *)a)->m_capacity;
+}
+
 void *lean_alloc_sarray(unsigned elem_size, size_t size, size_t capacity) {
     return lean_freestanding_alloc_sarray(elem_size, size, capacity);
+}
+
+void *lean_copy_sarray(void *a, size_t capacity) {
+    lean_sarray_object *src = (lean_sarray_object *)a;
+    unsigned elem_size = lean_freestanding_sarray_elem_size(a);
+    if (capacity < src->m_size) capacity = src->m_size;
+    lean_sarray_object *dst = lean_freestanding_alloc_sarray(elem_size, src->m_size, capacity);
+    size_t byte_size = elem_size * src->m_size;
+    for (size_t i = 0; i < byte_size; ++i) dst->m_data[i] = src->m_data[i];
+    if (lean_is_exclusive(a)) {
+        src->m_header.m_rc = 0;
+    } else {
+        lean_dec(a);
+    }
+    return dst;
+}
+
+void *lean_sarray_ensure_capacity(void *a, size_t min_capacity, uint8_t exact) {
+    size_t capacity = lean_sarray_capacity(a);
+    if (min_capacity <= capacity) return a;
+    size_t new_capacity = exact ? min_capacity : min_capacity * 2;
+    if (new_capacity < min_capacity) new_capacity = min_capacity;
+    return lean_copy_sarray(a, new_capacity);
+}
+
+static lean_sarray_object *lean_freestanding_ensure_exclusive_sarray(void *a) {
+    if (lean_is_exclusive(a)) return (lean_sarray_object *)a;
+    return (lean_sarray_object *)lean_copy_sarray(a, lean_sarray_capacity(a));
+}
+
+uint8_t lean_sarray_dec_eq(void *a1, void *a2) {
+    if (a1 == a2) return 1;
+    lean_sarray_object *x = (lean_sarray_object *)a1;
+    lean_sarray_object *y = (lean_sarray_object *)a2;
+    unsigned elem_size = lean_freestanding_sarray_elem_size(a1);
+    if (elem_size != lean_freestanding_sarray_elem_size(a2)) return 0;
+    if (x->m_size != y->m_size) return 0;
+    size_t byte_size = elem_size * x->m_size;
+    for (size_t i = 0; i < byte_size; ++i) {
+        if (x->m_data[i] != y->m_data[i]) return 0;
+    }
+    return 1;
 }
 
 void *lean_mk_empty_byte_array(void *capacity_box) {
@@ -1057,6 +1262,17 @@ void *lean_byte_array_mk(void *array) {
     for (size_t i = 0; i < a->m_size; ++i) {
         r->m_data[i] = (uint8_t)(lean_unbox(a->m_data[i]) & 0xFF);
     }
+    lean_dec(array);
+    return r;
+}
+
+void *lean_byte_array_data(void *a) {
+    lean_sarray_object *src = (lean_sarray_object *)a;
+    lean_array_object *r = lean_freestanding_alloc_array(src->m_size, src->m_size);
+    for (size_t i = 0; i < src->m_size; ++i) {
+        r->m_data[i] = (lean_object *)lean_box(src->m_data[i]);
+    }
+    lean_dec(a);
     return r;
 }
 
@@ -1068,10 +1284,14 @@ uint8_t lean_byte_array_uget(void *a, size_t i) {
     return ((lean_sarray_object *)a)->m_data[i];
 }
 
+uint8_t lean_byte_array_fget(void *a, void *i) {
+    return lean_byte_array_uget(a, lean_unbox(i));
+}
+
 /* Bounds-checked byte access. The host runtime returns 0 for out-of-bounds
    or non-scalar (i.e. arbitrarily-large) indices. */
 uint8_t lean_byte_array_get(void *a, void *i) {
-    if (((uintptr_t)i & 1u) == 1u) {
+    if (lean_freestanding_is_scalar(i)) {
         size_t idx = lean_unbox(i);
         lean_sarray_object *sa = (lean_sarray_object *)a;
         return idx < sa->m_size ? sa->m_data[idx] : 0;
@@ -1080,29 +1300,179 @@ uint8_t lean_byte_array_get(void *a, void *i) {
 }
 
 void *lean_byte_array_uset(void *a, size_t i, uint8_t v) {
-    ((lean_sarray_object *)a)->m_data[i] = v;
-    return a;
+    lean_sarray_object *r = lean_freestanding_ensure_exclusive_sarray(a);
+    r->m_data[i] = v;
+    return r;
+}
+
+void *lean_byte_array_fset(void *a, void *i, uint8_t v) {
+    return lean_byte_array_uset(a, lean_unbox(i), v);
+}
+
+void *lean_byte_array_set(void *a, void *i, uint8_t v) {
+    if (!lean_freestanding_is_scalar(i)) return a;
+    size_t idx = lean_unbox(i);
+    if (idx >= ((lean_sarray_object *)a)->m_size) return a;
+    return lean_byte_array_uset(a, idx, v);
 }
 
 void *lean_byte_array_push(void *a, uint8_t v) {
-    lean_sarray_object *src = (lean_sarray_object *)a;
-    if (src->m_capacity > src->m_size) {
-        src->m_data[src->m_size] = v;
-        src->m_size++;
-        return src;
-    }
-    size_t new_cap = src->m_capacity == 0 ? 16 : src->m_capacity * 2;
-    lean_sarray_object *dst = lean_freestanding_alloc_sarray(1, src->m_size + 1, new_cap);
-    for (size_t i = 0; i < src->m_size; ++i) dst->m_data[i] = src->m_data[i];
-    dst->m_data[src->m_size] = v;
-    return dst;
+    lean_sarray_object *r = (lean_sarray_object *)lean_sarray_ensure_capacity(
+        a, ((lean_sarray_object *)a)->m_size + 1, 0);
+    r = lean_freestanding_ensure_exclusive_sarray(r);
+    r->m_data[r->m_size] = v;
+    r->m_size++;
+    return r;
 }
 
 void *lean_copy_byte_array(void *a) {
+    return lean_copy_sarray(a, lean_sarray_capacity(a));
+}
+
+static size_t lean_freestanding_nat_to_size(void *n, const char *context) {
+    if (!lean_freestanding_is_scalar(n)) lean_freestanding_nat_panic(context);
+    return lean_unbox(n);
+}
+
+void *lean_byte_array_copy_slice(void *src_obj, void *src_off_obj, void *dest_obj,
+                                 void *dest_off_obj, void *len_obj, uint8_t exact) {
+    lean_sarray_object *src = (lean_sarray_object *)src_obj;
+    lean_sarray_object *dest = (lean_sarray_object *)dest_obj;
+    size_t src_off = lean_freestanding_nat_to_size(src_off_obj,
+        "lean-freestanding: byte_array_copy_slice source offset exceeds small-Nat cap");
+    if (src_off > src->m_size) return dest_obj;
+    size_t len = lean_freestanding_nat_to_size(len_obj,
+        "lean-freestanding: byte_array_copy_slice length exceeds small-Nat cap");
+    if (len > src->m_size - src_off) len = src->m_size - src_off;
+    size_t dest_off = lean_freestanding_nat_to_size(dest_off_obj,
+        "lean-freestanding: byte_array_copy_slice destination offset exceeds small-Nat cap");
+    if (dest_off > dest->m_size) dest_off = dest->m_size;
+    size_t new_size = dest->m_size;
+    if (dest_off + len > new_size) new_size = dest_off + len;
+    lean_sarray_object *r = (lean_sarray_object *)lean_sarray_ensure_capacity(dest_obj, new_size, exact);
+    r = lean_freestanding_ensure_exclusive_sarray(r);
+    r->m_size = new_size;
+    memmove(r->m_data + dest_off, src->m_data + src_off, len);
+    return r;
+}
+
+uint64_t lean_byte_array_hash(void *a) {
     lean_sarray_object *src = (lean_sarray_object *)a;
-    lean_sarray_object *dst = lean_freestanding_alloc_sarray(1, src->m_size, src->m_capacity);
-    for (size_t i = 0; i < src->m_size; ++i) dst->m_data[i] = src->m_data[i];
-    return dst;
+    const uint64_t m = 0xc6a4a7935bd1e995ull;
+    const unsigned r = 47;
+    uint64_t h = 11ull ^ (src->m_size * m);
+    size_t i = 0;
+    while (i + 8 <= src->m_size) {
+        uint64_t k = 0;
+        for (unsigned j = 0; j < 8; ++j) k |= ((uint64_t)src->m_data[i + j]) << (8 * j);
+        i += 8;
+        k *= m;
+        k ^= k >> r;
+        k *= m;
+        h ^= k;
+        h *= m;
+    }
+    const uint8_t *tail = src->m_data + i;
+    size_t rem = src->m_size & 7;
+    if (rem >= 7) h ^= (uint64_t)tail[6] << 48;
+    if (rem >= 6) h ^= (uint64_t)tail[5] << 40;
+    if (rem >= 5) h ^= (uint64_t)tail[4] << 32;
+    if (rem >= 4) h ^= (uint64_t)tail[3] << 24;
+    if (rem >= 3) h ^= (uint64_t)tail[2] << 16;
+    if (rem >= 2) h ^= (uint64_t)tail[1] << 8;
+    if (rem >= 1) {
+        h ^= (uint64_t)tail[0];
+        h *= m;
+    }
+    h ^= h >> r;
+    h *= m;
+    h ^= h >> r;
+    return h;
+}
+
+void *lean_box_float(double v) {
+    lean_ctor_object *o = (lean_ctor_object *)lean_alloc_ctor(0, 0, sizeof(double));
+    *(double *)((char *)o + sizeof(lean_ctor_object)) = v;
+    return o;
+}
+
+double lean_unbox_float(void *o) {
+    return *(double *)((char *)o + sizeof(lean_ctor_object));
+}
+
+void *lean_mk_empty_float_array(void *capacity_box) {
+    size_t cap = lean_unbox(capacity_box);
+    return lean_freestanding_alloc_sarray(sizeof(double), 0, cap);
+}
+
+void *lean_copy_float_array(void *a) {
+    return lean_copy_sarray(a, lean_sarray_capacity(a));
+}
+
+static double *lean_freestanding_float_array_cptr(void *a) {
+    return (double *)((lean_sarray_object *)a)->m_data;
+}
+
+void *lean_float_array_mk(void *array) {
+    lean_array_object *a = (lean_array_object *)array;
+    lean_sarray_object *r = lean_freestanding_alloc_sarray(sizeof(double), a->m_size, a->m_size);
+    double *dst = (double *)r->m_data;
+    for (size_t i = 0; i < a->m_size; ++i) dst[i] = lean_unbox_float(a->m_data[i]);
+    lean_dec(array);
+    return r;
+}
+
+void *lean_float_array_data(void *a) {
+    lean_sarray_object *src = (lean_sarray_object *)a;
+    lean_array_object *r = lean_freestanding_alloc_array(src->m_size, src->m_size);
+    double *src_data = (double *)src->m_data;
+    for (size_t i = 0; i < src->m_size; ++i) r->m_data[i] = (lean_object *)lean_box_float(src_data[i]);
+    lean_dec(a);
+    return r;
+}
+
+void *lean_float_array_push(void *a, double v) {
+    lean_sarray_object *r = (lean_sarray_object *)lean_sarray_ensure_capacity(
+        a, ((lean_sarray_object *)a)->m_size + 1, 0);
+    r = lean_freestanding_ensure_exclusive_sarray(r);
+    lean_freestanding_float_array_cptr(r)[r->m_size] = v;
+    r->m_size++;
+    return r;
+}
+
+void *lean_float_array_size(void *a) {
+    return lean_box(((lean_sarray_object *)a)->m_size);
+}
+
+double lean_float_array_uget(void *a, size_t i) {
+    return lean_freestanding_float_array_cptr(a)[i];
+}
+
+double lean_float_array_fget(void *a, void *i) {
+    return lean_float_array_uget(a, lean_unbox(i));
+}
+
+double lean_float_array_get(void *a, void *i) {
+    if (!lean_freestanding_is_scalar(i)) return 0.0;
+    size_t idx = lean_unbox(i);
+    return idx < ((lean_sarray_object *)a)->m_size ? lean_float_array_uget(a, idx) : 0.0;
+}
+
+void *lean_float_array_uset(void *a, size_t i, double v) {
+    lean_sarray_object *r = lean_freestanding_ensure_exclusive_sarray(a);
+    lean_freestanding_float_array_cptr(r)[i] = v;
+    return r;
+}
+
+void *lean_float_array_fset(void *a, void *i, double v) {
+    return lean_float_array_uset(a, lean_unbox(i), v);
+}
+
+void *lean_float_array_set(void *a, void *i, double v) {
+    if (!lean_freestanding_is_scalar(i)) return a;
+    size_t idx = lean_unbox(i);
+    if (idx >= ((lean_sarray_object *)a)->m_size) return a;
+    return lean_float_array_uset(a, idx, v);
 }
 
 void *lean_freestanding_make_byte_array(const uint8_t *data, size_t len) {
