@@ -46,9 +46,10 @@ fi
 
 fail() { echo "TEST FAILED: $*"; exit 1; }
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-SRCDIR=$PWD
+SRCDIR=$SCRIPT_DIR
 cd "$WORK"
 cp "$SRCDIR/Hello.lean" .
 
@@ -185,5 +186,74 @@ echo "OK: register_unsupported_on_target accepts non-matching triple"
 lean --bc=caller_host.bc Caller.lean \
   || fail "deny-list: host build of Caller.lean unexpectedly rejected"
 echo "OK: register_unsupported_on_target inactive on host build"
+
+# ---------------------------------------------------------------------------
+# Case 5: default freestanding policy rejects unsupported runtime families
+#   These are real stdlib/runtime families that the freestanding runtime does
+#   not provide. They must fail at Lean codegen time instead of surfacing as
+#   target linker errors or runtime traps.
+# ---------------------------------------------------------------------------
+cp "$SRCDIR/UnsupportedRuntimeFamilies.lean" .
+
+if lean --target=wasm32-unknown-unknown --bc=unsupported_runtime.bc \
+        UnsupportedRuntimeFamilies.lean 2>unsupported_runtime.err; then
+  fail "freestanding policy: unsupported runtime families compiled successfully"
+fi
+
+for needle in \
+  "IO.getStdout" \
+  "Std.BaseMutex.new" \
+  "Thunk.get" \
+  "Float.add" \
+  "String.Pos.Raw.get" \
+  "Std.Net.IPv4Addr.ofString"
+do
+  grep -q "$needle" unsupported_runtime.err \
+    || fail "freestanding policy: expected '$needle' in diagnostic, got:\n$(cat unsupported_runtime.err)"
+done
+echo "OK: freestanding policy rejects unsupported runtime families at compile time"
+
+# ---------------------------------------------------------------------------
+# Case 6: compile-time Nat literal cap checks
+#   Freestanding Nat is restricted to tagged small-Nat payloads. The compiler
+#   must reject oversized executable literals for the target pointer width.
+# ---------------------------------------------------------------------------
+cp "$SRCDIR/NatLiteralFits64.lean" .
+cp "$SRCDIR/NatLiteralOver64.lean" .
+
+if lean --target=wasm32-unknown-unknown --bc=nat_wasm_over.bc \
+        NatLiteralFits64.lean 2>nat_wasm_over.err; then
+  fail "Nat cap: wasm32 accepted a Nat literal above its small-Nat cap"
+fi
+grep -q "2147483648" nat_wasm_over.err \
+  || fail "Nat cap: expected wasm32 diagnostic to include the rejected literal, got:\n$(cat nat_wasm_over.err)"
+grep -q "2147483647" nat_wasm_over.err \
+  || fail "Nat cap: expected wasm32 diagnostic to include cap 2147483647, got:\n$(cat nat_wasm_over.err)"
+grep -q "wasm32-unknown-unknown" nat_wasm_over.err \
+  || fail "Nat cap: expected wasm32 diagnostic to include target triple, got:\n$(cat nat_wasm_over.err)"
+grep -qE "line [0-9]+:" nat_wasm_over.err \
+  || fail "Nat cap: expected wasm32 diagnostic to include a source position, got:\n$(cat nat_wasm_over.err)"
+
+lean --target=riscv64-unknown-none-elf --bc=nat_riscv64_fits.bc \
+     NatLiteralFits64.lean \
+  || fail "Nat cap: riscv64 rejected a Nat literal that fits its small-Nat cap"
+[[ -s nat_riscv64_fits.bc ]] || fail "Nat cap: no riscv64 bitcode emitted for fitting Nat literal"
+
+if lean --target=riscv64-unknown-none-elf --bc=nat_riscv64_over.bc \
+        NatLiteralOver64.lean 2>nat_riscv64_over.err; then
+  fail "Nat cap: riscv64 accepted a Nat literal above its small-Nat cap"
+fi
+grep -q "9223372036854775808" nat_riscv64_over.err \
+  || fail "Nat cap: expected riscv64 diagnostic to include the rejected literal, got:\n$(cat nat_riscv64_over.err)"
+grep -q "9223372036854775807" nat_riscv64_over.err \
+  || fail "Nat cap: expected riscv64 diagnostic to include cap 9223372036854775807, got:\n$(cat nat_riscv64_over.err)"
+grep -q "riscv64-unknown-none-elf" nat_riscv64_over.err \
+  || fail "Nat cap: expected riscv64 diagnostic to include target triple, got:\n$(cat nat_riscv64_over.err)"
+grep -qE "line [0-9]+:" nat_riscv64_over.err \
+  || fail "Nat cap: expected riscv64 diagnostic to include a source position, got:\n$(cat nat_riscv64_over.err)"
+
+lean --bc=nat_host_over.bc NatLiteralOver64.lean \
+  || fail "Nat cap: host build unexpectedly rejected large Nat literal"
+echo "OK: freestanding Nat literal caps are enforced per target pointer width"
 
 echo "PASS: cross_target codegen + deny-list test"

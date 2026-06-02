@@ -79,6 +79,90 @@ def pointerBitsForTriple (triple : String) : BaseIO (Option Nat) := do
   LLVM.disposeTargetData td
   return some (bytes.toNat * 8)
 
+def smallNatPayloadCap (pointerBits : Nat) : Nat :=
+  if pointerBits == 32 then
+    Nat.pow 2 31 - 1
+  else
+    Nat.pow 2 63 - 1
+
+structure NatLiteralCapHit where
+  declName : Name
+  value    : Nat
+
+namespace CollectNatLiteralCapHits
+
+abbrev M := ReaderT (Name × Nat) (StateM (Array NatLiteralCapHit))
+
+@[inline] private def visitExpr (ty : IRType) (e : Expr) : M Unit := do
+  let (declName, cap) ← read
+  match e with
+  | .lit (.num v) =>
+    if ty.isObj && v > cap then
+      modify (·.push { declName, value := v })
+  | _ => return ()
+
+partial def visitFnBody : FnBody → M Unit
+  | .vdecl _ ty e b   => visitExpr ty e *> visitFnBody b
+  | .jdecl _ _ v b    => visitFnBody v *> visitFnBody b
+  | .case _ _ _ alts  => alts.forM fun alt => visitFnBody alt.body
+  | e                 => do unless e.isTerminal do visitFnBody e.body
+
+end CollectNatLiteralCapHits
+
+private def collectNatLiteralCapHits (decls : List Decl) (cap : Nat) :
+    Array NatLiteralCapHit :=
+  (decls.forM go).run #[] |>.snd
+where
+  go : Decl → StateM (Array NatLiteralCapHit) Unit
+    | .fdecl (f := f) (body := b) .. =>
+      CollectNatLiteralCapHits.visitFnBody b (f, cap)
+    | _ => pure ()
+
+private partial def findSourceDeclWithRange? (env : Environment) (declName : Name) :
+    Option Name :=
+  if (declRangeExt.find? (level := .exported) env declName
+    <|> declRangeExt.find? (level := .server) env declName).isSome then
+    some declName
+  else
+    let parent := declName.getPrefix
+    if parent == declName || parent.isAnonymous then
+      none
+    else
+      findSourceDeclWithRange? env parent
+
+private def formatDeclSource (env : Environment) (modNames : Array Name) (declName : Name) :
+    String :=
+  let sourceName := (findSourceDeclWithRange? env declName).getD declName
+  let source :=
+    if sourceName == declName then "" else s!" via {sourceName}"
+  let pos :=
+    match declRangeExt.find? (level := .exported) env sourceName
+      <|> declRangeExt.find? (level := .server) env sourceName with
+    | some r => s!" at line {r.range.pos.line}:{r.range.pos.column}"
+    | none   => ""
+  let mod :=
+    match env.getModuleIdxFor? sourceName with
+    | some idx => if idx.toNat < modNames.size then s!" in {modNames[idx.toNat]!}" else ""
+    | none     => ""
+  source ++ pos ++ mod
+
+/-- Reject executable Nat literals that the freestanding runtime cannot
+represent as tagged small-Nat payloads on the target pointer width. -/
+def checkFreestandingNatLiteralCaps (env : Environment) (triple : String) :
+    BaseIO (Option String) := do
+  if triple.isEmpty then return none
+  let pointerBits ← match ← pointerBitsForTriple triple with
+    | some 32 => pure 32
+    | _       => pure 64
+  let cap := smallNatPayloadCap pointerBits
+  let hits := collectNatLiteralCapHits (getDecls env) cap
+  if hits.isEmpty then return none
+  let modNames := env.header.moduleNames
+  let lines := hits.map fun hit =>
+    s!"  literal {hit.value} in {hit.declName}{formatDeclSource env modNames hit.declName}"
+  return some s!"freestanding Nat literal exceeds the target small-Nat cap for {triple} \
+({pointerBits}-bit pointers, cap {cap}):\n{"\n".intercalate lines.toList}"
+
 /-- Reject programs that reach a decl flagged unsupported for `triple` (via
 `register_unsupported_on_target`). Returns a message naming each offender,
 its registered reason, and the user-side direct callers with source ranges. -/
@@ -1779,6 +1863,8 @@ def emitLLVM (env : Environment) (modName : Name) (triple : String) (runtime : S
     -- against the host runtime) ships these decls and shouldn't be rejected.
     if runtime == "none" then
       if let some msg ← LLVM.checkUnsupportedOnTarget env triple then
+        throw <| IO.Error.userError msg
+      if let some msg ← LLVM.checkFreestandingNatLiteralCaps env triple then
         throw <| IO.Error.userError msg
   let emitLLVMCtx : EmitLLVM.Context llvmctx :=
     {env := env, modName := modName, llvmmodule := module, triple := triple}

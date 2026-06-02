@@ -313,7 +313,16 @@ where
   compileGround (e : SimpleGroundExpr) : GroundM Unit := do
     let valueName ← compileGroundToValue e
     let declPrefix := if isClosedTermName (← getEnv) decl.name then "static" else "LEAN_EXPORT"
-    emitLn <| s!"{declPrefix} const lean_object* {cppBaseName} = (const lean_object*)&{valueName};"
+    if isClosedTermName (← getEnv) decl.name then
+      emitLn <| s!"{declPrefix} const lean_object* {cppBaseName} = (const lean_object*)&{valueName};"
+    else
+      let initName ← toCInitName decl.name
+      emitLn "#if defined(LEAN_FREESTANDING_NO_GLOBAL_INIT_STATE)"
+      emitLn <| s!"LEAN_EXPORT lean_object* {initName}(void) \{ return (lean_object*)&{valueName}; }"
+      emitLn <| s!"#define {cppBaseName} {initName}()"
+      emitLn "#else"
+      emitLn <| s!"{declPrefix} const lean_object* {cppBaseName} = (const lean_object*)&{valueName};"
+      emitLn "#endif"
 
   compileGroundToValue (e : SimpleGroundExpr) : GroundM String := do
     match e with
@@ -492,14 +501,49 @@ where
     let ps := sig.params
     let env ← getEnv
 
-    if ps.isEmpty then
+    if ps.isEmpty && isSimpleGroundDecl env sig.name then
+      let initName ← toCInitName sig.name
+      emitLn "#if defined(LEAN_FREESTANDING_NO_GLOBAL_INIT_STATE)"
       if isExternal then
         emit "extern "
       else
         emit "LEAN_EXPORT "
+      emitLn <| sig.type.toCType ++ " " ++ initName ++ "(void);"
+      emitLn <| s!"#define {cppBaseName} {initName}()"
+      emitLn "#else"
+      if isExternal then
+        emit "extern "
+      else
+        emit "LEAN_EXPORT "
+      emitLn <| sig.type.toCType ++ " " ++ cppBaseName ++ ";"
+      emitLn "#endif"
+      return
+
+    if ps.isEmpty then
+      unless hasInitAttr env sig.name do
+        let initName ← toCInitName sig.name
+        emitLn "#if defined(LEAN_FREESTANDING_NO_GLOBAL_INIT_STATE)"
+        if isExternal then
+          emit "extern "
+        else
+          emit "LEAN_EXPORT "
+        emitLn <| sig.type.toCType ++ " " ++ initName ++ "(void);"
+        emitLn <| s!"#define {cppBaseName} {initName}()"
+        emitLn "#else"
+      if isExternal then
+        emit "extern "
+      else
+        emit "LEAN_EXPORT "
+      emit <| sig.type.toCType ++ " " ++ cppBaseName
+      unless hasInitAttr env sig.name do
+        emitLn ";"
+        emitLn "#endif"
+        return
     else if !isExternal then
       emit "LEAN_EXPORT "
-    emit <| sig.type.toCType ++ " " ++ cppBaseName
+      emit <| sig.type.toCType ++ " " ++ cppBaseName
+    else
+      emit <| sig.type.toCType ++ " " ++ cppBaseName
     unless ps.isEmpty do
       emit "("
       -- We omit void parameters, note that they are guaranteed not to occur in boxed functions
@@ -932,17 +976,21 @@ def emitDecl (decl : Decl .impure) : EmitM Unit := do
     let baseName ← toCName decl.name
     let ps := decl.params
     if ps.isEmpty then
+      emitLn "#if defined(LEAN_FREESTANDING_NO_GLOBAL_INIT_STATE)"
+      emit "LEAN_EXPORT "
+      emit decl.type.toCType; emit " "
+      emitCInitName decl.name
+      emitLn "(void)"
+      emitLn "#else"
       emit "static "
+      emit decl.type.toCType; emit " "
+      emitCInitName decl.name
+      emitLn "(void)"
+      emitLn "#endif"
     else
       -- make the symbol visible to the interpreter for native execution
       emit "LEAN_EXPORT "
-
-    emit decl.type.toCType; emit " "
-
-    if ps.isEmpty then
-      emitCInitName decl.name
-      emit "(void)"
-    else
+      emit decl.type.toCType; emit " "
       emit baseName
       emit "("
       let ps := paramsWithoutVoid ps
@@ -1001,8 +1049,10 @@ def emitDeclInit (decl : Decl .impure) (isBuiltin : Bool) : EmitM Unit := do
         emitMarkPersistent decl
       emitLn "lean_dec_ref(res);"
     else if !(isClosedTermName env decl.name || isSimpleGroundDecl env decl.name) then
+      emitLn "#if !defined(LEAN_FREESTANDING_NO_GLOBAL_INIT_STATE)"
       emitCName decl.name; emit " = "; emitCInitName decl.name; emitLn "();"
       emitMarkPersistent decl
+      emitLn "#endif"
 
 def emitInitFn (phases : IRPhases) : EmitM Unit := do
   let env ← getEnv
@@ -1017,19 +1067,27 @@ def emitInitFn (phases : IRPhases) : EmitM Unit := do
     return some fn
   let initialized := s!"_G_{mkModuleInitializationPrefix phases}initialized"
   emitLns [
+    "#if !defined(LEAN_FREESTANDING_NO_GLOBAL_INIT_STATE)",
     s!"static bool {initialized} = false;",
+    "#endif",
     s!"LEAN_EXPORT lean_object* {← getModInitFn (phases := phases)}(uint8_t builtin) \{",
     "lean_object * res;",
+    "#if !defined(LEAN_FREESTANDING_NO_GLOBAL_INIT_STATE)",
     s!"if ({initialized}) return lean_io_result_mk_ok(lean_box(0));",
-    s!"{initialized} = true;"
+    s!"{initialized} = true;",
+    "#endif"
   ]
   impInitFns.forM fun fn => do
+    emitLn "#if !defined(LEAN_FREESTANDING_SKIP_MODULE_INIT_BODY)"
     withErrRet do
       emit s!"{fn}(builtin)"
     emitLn "lean_dec_ref(res);"
+    emitLn "#endif"
+  emitLn "#if !defined(LEAN_FREESTANDING_SKIP_MODULE_INIT_BODY)"
   for decl in (← getLocalDecls) do
     if phases == .all || (phases == .comptime) == isMarkedMeta env decl.name then
       emitDeclInit decl (isBuiltin := phases != .comptime)
+  emitLn "#endif"
   emitLn "return lean_io_result_mk_ok(lean_box(0));"
   emitLn "}"
 
@@ -1045,16 +1103,23 @@ def emitLegacyInitFn : EmitM Unit := do
     return some fn
   let initialized := s!"_G_initialized"
   emitLns [
+    "#if !defined(LEAN_FREESTANDING_NO_GLOBAL_INIT_STATE)",
     s!"static bool {initialized} = false;",
+    "#endif",
     s!"LEAN_EXPORT lean_object* {← getModInitFn (phases := .all)}(uint8_t builtin) \{",
     "lean_object * res;",
+    "#if !defined(LEAN_FREESTANDING_NO_GLOBAL_INIT_STATE)",
     s!"if ({initialized}) return lean_io_result_mk_ok(lean_box(0));",
-    s!"{initialized} = true;"
+    s!"{initialized} = true;",
+    "#endif"
   ]
   impInitFns.forM fun fn => do
+    emitLn "#if !defined(LEAN_FREESTANDING_SKIP_MODULE_INIT_BODY)"
     withErrRet do
       emit s!"{fn}(builtin)"
     emitLn "lean_dec_ref(res);"
+    emitLn "#endif"
+  emitLn "#if !defined(LEAN_FREESTANDING_SKIP_MODULE_INIT_BODY)"
   withErrRet do
     emit s!"{← getModInitFn (phases := .runtime)}(builtin)"
   emitLn "lean_dec_ref(res);"
@@ -1062,6 +1127,9 @@ def emitLegacyInitFn : EmitM Unit := do
     emit s!"{← getModInitFn (phases := .comptime)}(builtin)"
   emitLn "lean_dec_ref(res);"
   emitLn s!"return {← getModInitFn (phases := .all)}(builtin);"
+  emitLn "#else"
+  emitLn "return lean_io_result_mk_ok(lean_box(0));"
+  emitLn "#endif"
   emitLn "}"
 
 def emitMainFnIfNeeded : EmitM Unit := do
