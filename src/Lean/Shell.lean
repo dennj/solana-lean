@@ -294,6 +294,7 @@ private def setTarget (opts : ShellOptions) (triple : String) : ShellOptions :=
   let leanOpts := Compiler.compiler.target.set opts.leanOpts triple
   let leanOpts := Compiler.compiler.runtime.set leanOpts "none"
   let leanOpts := Compiler.compiler.crossImports.set leanOpts "Std.Freestanding.Unsupported"
+  let leanOpts := Compiler.LCNF.compiler.extract_closed.set leanOpts false
   { opts with forwardedArgs := opts.forwardedArgs.push s!"--target={triple}", leanOpts }
 
 /--

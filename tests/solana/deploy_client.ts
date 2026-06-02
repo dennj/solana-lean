@@ -17,6 +17,7 @@
 
 import {
   Connection,
+  ComputeBudgetProgram,
   Keypair,
   PublicKey,
   Transaction,
@@ -188,8 +189,17 @@ async function cmdSimple(programId: PublicKey, payerPath: string, name: string) 
     data,
   });
   try {
-    const sig = await sendAndConfirmTransaction(conn, new Transaction().add(ix), [payer]);
+    const tx = new Transaction();
+    const computeUnits = Number(process.env.COMPUTE_UNITS ?? "0");
+    if (computeUnits > 0) {
+      tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: computeUnits }));
+    }
+    tx.add(ix);
+    const sig = await sendAndConfirmTransaction(conn, tx, [payer]);
     const logs = await getTxLogs(sig);
+    if (process.env.PRINT_LOGS === "1") {
+      console.log(logs.join("\n"));
+    }
     const programLine = logs.find((l) => l.includes(`Program ${programId.toBase58()} success`));
     if (!programLine) {
       fail(`${name}: expected 'Program <id> success' in logs, got:\n${logs.join("\n")}`);
@@ -200,13 +210,96 @@ async function cmdSimple(programId: PublicKey, payerPath: string, name: string) 
   }
 }
 
+async function sendWithOptionalCompute(payer: Keypair, ix: TransactionInstruction): Promise<string> {
+  const tx = new Transaction();
+  const computeUnits = Number(process.env.COMPUTE_UNITS ?? "0");
+  if (computeUnits > 0) {
+    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: computeUnits }));
+  }
+  tx.add(ix);
+  return await sendAndConfirmTransaction(conn, tx, [payer]);
+}
+
+async function cmdTypecheckerStages(programId: PublicKey, payerPath: string) {
+  const payer = loadKeypair(payerPath);
+  await ensureFunded(payer);
+  await waitForExecutable(programId);
+
+  const state = Keypair.generate();
+  const space = 8;
+  const rent = await conn.getMinimumBalanceForRentExemption(space);
+  const createIx = SystemProgram.createAccount({
+    fromPubkey: payer.publicKey,
+    newAccountPubkey: state.publicKey,
+    lamports: rent,
+    space,
+    programId,
+  });
+  await sendAndConfirmTransaction(conn, new Transaction().add(createIx), [payer, state]);
+
+  for (let stage = 0; stage < 3; stage++) {
+    const data = Buffer.from([stage]);
+    const ix = new TransactionInstruction({
+      keys: [{ pubkey: state.publicKey, isSigner: false, isWritable: true }],
+      programId,
+      data,
+    });
+    const sig = await sendWithOptionalCompute(payer, ix);
+    const logs = await getTxLogs(sig);
+    if (process.env.PRINT_LOGS === "1") {
+      console.log(logs.join("\n"));
+    }
+    const marker = logs.find((l) =>
+      l.match(/Program log: 0x1eaa, 0x[0-9a-f]+, 0x[0-9a-f]+, 0x[0-9a-f]+, 0x0/i)
+    );
+    if (!marker) {
+      fail(`typechecker-stage ${stage}: missing success marker:\n${logs.join("\n")}`);
+    }
+    const account = await conn.getAccountInfo(state.publicKey);
+    if (!account) fail(`typechecker-stage ${stage}: state account missing`);
+    const progress = account.data.readUInt8(0);
+    if (progress !== stage + 1) {
+      fail(`typechecker-stage ${stage}: expected progress ${stage + 1}, got ${progress}`);
+    }
+  }
+
+  console.log("PASS typechecker-stages: staged checker advanced 0 → 1 → 2 → 3 on-chain");
+}
+
+async function cmdTypecheckerPolicy(programId: PublicKey, payerPath: string) {
+  const payer = loadKeypair(payerPath);
+  await ensureFunded(payer);
+  await waitForExecutable(programId);
+
+  for (const [token, name] of [[50, "reject-submitted-axiom"], [51, "reject-sorryAx"]] as const) {
+    const ix = new TransactionInstruction({
+      keys: [{ pubkey: payer.publicKey, isSigner: true, isWritable: true }],
+      programId,
+      data: Buffer.from([token]),
+    });
+    const sig = await sendWithOptionalCompute(payer, ix);
+    const logs = await getTxLogs(sig);
+    if (process.env.PRINT_LOGS === "1") {
+      console.log(logs.join("\n"));
+    }
+    const marker = logs.find((l) =>
+      l.match(new RegExp(`Program log: 0x1eac, 0x${token.toString(16)}, 0x[0-9a-f]+, 0x0, 0x0`, "i"))
+    );
+    if (!marker) {
+      fail(`typechecker-policy ${name}: missing success marker:\n${logs.join("\n")}`);
+    }
+  }
+
+  console.log("PASS typechecker-policy: submitted axioms and sorryAx proofs rejected on-chain");
+}
+
 const cmd = process.argv[2];
 const programIdStr = process.argv[3];
 const payerPath = process.argv[4];
 
 if (!cmd || !programIdStr || !payerPath) {
   console.error("usage: bun deploy_client.ts <cmd> <programId> <payerKeypair.json>");
-  console.error("  cmd: hello | counter | increment | nat | logmany | tuple | denied");
+  console.error("  cmd: hello | counter | increment | nat | logmany | tuple | denied | typechecker-stages | typechecker-policy");
   process.exit(2);
 }
 
@@ -220,6 +313,8 @@ switch (cmd) {
   case "diag1":      await cmdDiag(programId, payerPath, "Diag1Const",  0,   0x2An); break;
   case "diag2":      await cmdDiag(programId, payerPath, "Diag2Byte0", 42,   0x2An); break;
   case "diag3":      await cmdDiag(programId, payerPath, "Diag3Decode", 7,   0x07n); break;
+  case "typechecker-stages": await cmdTypecheckerStages(programId, payerPath); break;
+  case "typechecker-policy": await cmdTypecheckerPolicy(programId, payerPath); break;
   default:
     fail(`unknown cmd: ${cmd}`);
 }

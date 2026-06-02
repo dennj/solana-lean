@@ -53,7 +53,11 @@ private def link (root : FilePath) (a : CrossArgs) : IO UInt32 := do
 
   IO.FS.withTempDir fun tmp => do
     let mut objects : Array String := #[]
-    let freestandingIncludeArgs : Array String := #["-I", freestandingDir.toString]
+    let freestandingIncludeArgs : Array String :=
+      #["-I", freestandingDir.toString,
+        "-DLEAN_FREESTANDING_NO_GLOBAL_INIT_STATE",
+        "-DLEAN_FREESTANDING_SKIP_MODULE_INIT_BODY"]
+    let sectionArgs : Array String := #["-ffunction-sections", "-fdata-sections"]
 
     let compileBc (bc : FilePath) (objName : String) : IO String := do
       let obj := (tmp / objName).toString
@@ -62,7 +66,7 @@ private def link (root : FilePath) (a : CrossArgs) : IO UInt32 := do
       return obj
     let compileUserC (c : FilePath) (objName : String) : IO String := do
       let obj := (tmp / objName).toString
-      runOrFail clang (#[s!"--target={a.triple}", "-O2", "-fPIC"] ++
+      runOrFail clang (#[s!"--target={a.triple}", "-O2", "-fPIC"] ++ sectionArgs ++
         freestandingIncludeArgs ++ a.compileArgs ++ #["-c", c.toString, "-o", obj])
       return obj
     -- SBF VM heap layout: 32 KB at 0x3_0000_0000, with a 24-byte prefix
@@ -75,8 +79,13 @@ private def link (root : FilePath) (a : CrossArgs) : IO UInt32 := do
         "-DLEAN_FREESTANDING_HEAP_PREFIX=24"]
     let compileRuntimeC (c : FilePath) (objName : String) : IO String := do
       let obj := (tmp / objName).toString
-      runOrFail clang (#[s!"--target={a.triple}", "-O2", "-fPIC"] ++
+      runOrFail clang (#[s!"--target={a.triple}", "-O2", "-fPIC"] ++ sectionArgs ++
         freestandingIncludeArgs ++ sbfHeapDefs ++ #["-c", c.toString, "-o", obj])
+      return obj
+    let compileFreestandingRuntimeC (c : FilePath) (objName : String) : IO String := do
+      let obj := (tmp / objName).toString
+      runOrFail clang (#[s!"--target={a.triple}", "-O2", "-fPIC", "-fvisibility=hidden"] ++
+        sectionArgs ++ freestandingIncludeArgs ++ sbfHeapDefs ++ #["-c", c.toString, "-o", obj])
       return obj
 
     let mut leanObjs : Array String := #[]
@@ -101,7 +110,7 @@ private def link (root : FilePath) (a : CrossArgs) : IO UInt32 := do
 
     objects := objects.push (← compileRuntimeC entrypointC "entrypoint.o")
     objects := objects.push (← compileRuntimeC stubsC "stubs.o")
-    objects := objects.push (← compileRuntimeC freestandingRuntimeC "freestanding_runtime.o")
+    objects := objects.push (← compileFreestandingRuntimeC freestandingRuntimeC "freestanding_runtime.o")
     objects := objects.push (← compileRuntimeC runtimeC "runtime.o")
 
     let mut initSymbol? : Option String := none
@@ -149,8 +158,13 @@ unsigned long long lean_sbf_invoke_entry(const unsigned char *input) {
     IO.FS.writeFile glueC (initWrapper ++ entryWrapper)
     objects := objects.push (← compileRuntimeC glueC "lean_sbf_glue.o")
 
+    let exportsMap := tmp / "sbf_exports.map"
+    IO.FS.writeFile exportsMap "{\n  global:\n    entrypoint;\n  local:\n    *;\n};\n"
+
     let mut linkArgs : Array String :=
       #["-z", "notext", "-shared", "--Bdynamic",
+        "--gc-sections",
+        "--version-script", exportsMap.toString,
         "-T", sbfLd.toString,
         "--entry", "entrypoint",
         "-o", output.toString]

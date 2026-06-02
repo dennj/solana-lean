@@ -116,10 +116,11 @@ The Lean LLVM backend was host-only — it hardcoded `i64` for `size_t`, never s
 
 A Solana program that calls `IO.FS.readFile` is a link-time disaster waiting to happen. New machinery surfaces those errors at *compile* time with the right source location:
 
-- `register_unsupported_on_target <decl> <triple-glob> <reason>` command ([src/Lean/Compiler/UnsupportedOnTargetCmd.lean](src/Lean/Compiler/UnsupportedOnTargetCmd.lean))
+- `register_unsupported_on_target <decl> <triple-glob> <reason>` command ([src/Lean/Compiler/UnsupportedOnTargetCmd.lean](src/Lean/Compiler/UnsupportedOnTargetCmd.lean)) — validates the decl name exists at registration time, so a typo in the policy file fails fast instead of silently letting calls slip through.
 - Persistent env extension stores the deny list across modules ([src/Lean/Compiler/UnsupportedOnTarget.lean](src/Lean/Compiler/UnsupportedOnTarget.lean))
 - Reachability check intersects the deny list with `collectUsedDecls`, then walks IR with new `collectDirectCallersOf` ([src/Lean/Compiler/IR/EmitUtil.lean](src/Lean/Compiler/IR/EmitUtil.lean)) to print the user-side callers with file:line ([src/Lean/Compiler/IR/EmitLLVM.lean — `checkUnsupportedOnTarget`](src/Lean/Compiler/IR/EmitLLVM.lean))
-- Default deny list for every cross target — filesystem, processes, real-time clock, env, threads, stdin — in [src/Std/Freestanding/Unsupported.lean](src/Std/Freestanding/Unsupported.lean), auto-imported through `compiler.crossImports`.
+- Default deny list for every cross target — filesystem, processes, real-time clock, host environment, threads, host stdio, networking and libuv, mutex/condvar/promise primitives, Thunks, Float arithmetic, share-common, String slice/pattern helpers — ~140 entries in [src/Std/Freestanding/Unsupported.lean](src/Std/Freestanding/Unsupported.lean), auto-imported through `compiler.crossImports`.
+- Companion **Nat-literal cap check** in [`checkFreestandingNatLiteralCaps`](src/Lean/Compiler/IR/EmitLLVM.lean) — same "fail at compile time, not at the linker" philosophy applied to executable Nat literals that exceed the target's tagged small-Nat payload (32-bit cap on wasm32, 63-bit on 64-bit targets), reported with the source decl and file:line.
 
 ### 3. `@[never_extract]` survives DCE
 
@@ -129,12 +130,15 @@ The Solana log syscall is *only* useful for its side effect. The LCNF pure-mode 
 
 A libc-free, host-runtime-free runtime that every cross target shares ([src/runtime/freestanding/](src/runtime/freestanding/)):
 
-- Bump allocator (refcount no-ops, since the program runs once and exits)
-- Boxing, ctor alloc/accessors, IO-result wrappers
+- Reclaiming allocator over an embedder-supplied heap — scans for reusable free blocks before extending the high-water cursor, coalesces adjacent free blocks. No libc `malloc`/`free`.
+- Real single-threaded reference counting: `lean_is_exclusive`, persistent marking, recursive release of owned fields, constructor reset/reuse — the host invariants generated code relies on for copy-on-write to fire correctly.
+- Copy-on-write for `Array` / `ByteArray` / `FloatArray` (`push`, `uset`, `swap`, `pop`, …) — mutate in place when exclusive, otherwise allocate a copy first.
+- Boxing, ctor alloc/accessors, IO-result wrappers, pointer-address and mix-hash helpers
+- Single-threaded `ST.Ref` cells (new `LEAN_TAG_REF`)
 - Strings, arrays, scalar arrays
-- Closure machinery for arities 1–8
-- Small-Nat / Int subset capped at `(uintptr_t)-1 >> 1`
-- **ABI mirrors host `lean.h` exactly** — silent miscompute lurks here if it drifts
+- Closure machinery for arities 1–16 (plus `lean_apply_n` / `lean_apply_m`)
+- Bounded small-Nat / small-Int subset capped at `(uintptr_t)-1 >> 1`; arithmetic that would require MPZ-backed values traps instead of silently truncating
+- **ABI mirrors host `lean.h` exactly** — silent miscompute lurks here if it drifts. See [src/runtime/freestanding/AUDIT.md](src/runtime/freestanding/AUDIT.md) for the ownership/layout audit against `lean.h`, `object.cpp`, and `apply.cpp`.
 
 Per-target adapters layer on top:
 
@@ -185,10 +189,12 @@ $ solana program deploy build/bin/my_program.so
 
 ### 7. Tests
 
-- [tests/stdlib_probes/](tests/stdlib_probes/) — ~50 probes (one per stdlib feature: arrays, strings, Nat overflow, monads, well-founded recursion, structures, …) that run identically on host, SBF, and wasm to catch ABI drift before it ships.
+- [tests/stdlib_probes/](tests/stdlib_probes/) — 62 probes (one per stdlib feature: arrays, strings, Nat overflow, monads, well-founded recursion, structures, …) that run identically on host, SBF, and wasm to catch ABI drift before it ships.
+- [tests/freestanding_runtime/](tests/freestanding_runtime/) — host-side differential C driver that compiles the freestanding runtime as a plain host library and exercises copy-on-write and reclamation invariants directly. No Lean compiler or cross backend required, so RC/exclusivity/allocator regressions surface even when no target is in the build.
+- [tests/freestanding_sync/](tests/freestanding_sync/) — companion driver covering the single-threaded synchronization surface.
 - [tests/solana/](tests/solana/) — Counter, AddressBook, PDA, CPI shape, Borsh round-trip — plus the Colosseum vault — with a deploy harness + TS client (`run_test.sh`, `deploy_client.ts`).
 - [tests/wasm/](tests/wasm/) — WASI execution via Node / wasmtime.
-- [tests/cross_target/](tests/cross_target/) — golden tests for the diagnostic output of the deny list.
+- [tests/cross_target/](tests/cross_target/) — golden tests for the diagnostic output of the deny list and the Nat-literal cap.
 - [.github/workflows/cross-compile.yml](.github/workflows/cross-compile.yml) — CI matrix exercising every target on every PR.
 
 ---
@@ -243,8 +249,11 @@ src/
 Colosseum/                        ← 🏛️ headline showcase: vault + proofs + devnet demo
 tests/
   stdlib_probes/                  ← cross-target conformance suite
+  freestanding_runtime/           ← host-side RC / CoW / reclamation driver
+  freestanding_sync/              ← single-threaded sync driver
   solana/                         ← deployable program tests + TS client
   wasm/                           ← WASI tests
+  cross_target/                   ← deny-list + Nat-literal cap diagnostics
   kernel_riscv64/                 ← ⚙️ bare-metal RISC-V kernel demo
 ```
 
