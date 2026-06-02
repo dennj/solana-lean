@@ -39,8 +39,6 @@ static uint64_t sol_strlen(const char *s) {
 /* IO scaffolding / module init not provided on SBF. */
 LEAN_SBF_TRAP_FN1(lean_io_result_show_error,         void,     void *)
 LEAN_SBF_TRAP_FN1(lean_initialize_runtime_module,    void *,   void *)
-LEAN_SBF_TRAP_FN0(lean_init_task_manager,            void)
-LEAN_SBF_TRAP_FN0(lean_finalize_task_manager,        void)
 
 /* Host-runtime decls deny-listed for sbf-* (see src/Std/Solana/Unsupported.lean). */
 LEAN_SBF_TRAP_FN1(lean_get_stdout,         void *,   void *)

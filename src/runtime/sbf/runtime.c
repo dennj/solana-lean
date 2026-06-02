@@ -37,6 +37,38 @@ void lean_freestanding_panic(const char *what, uint64_t a, uint64_t b) {
 }
 
 /* ===========================================================================
+   Compiler-rt helpers required by Solana LLVM
+   =========================================================================*/
+
+typedef unsigned __int128 lean_sbf_du_int;
+typedef __int128 lean_sbf_ti_int;
+
+static uint64_t lean_sbf_mul64_high(uint64_t a, uint64_t b) {
+    uint64_t a0 = (uint32_t)a;
+    uint64_t a1 = a >> 32;
+    uint64_t b0 = (uint32_t)b;
+    uint64_t b1 = b >> 32;
+    uint64_t p0 = a0 * b0;
+    uint64_t p1 = a0 * b1;
+    uint64_t p2 = a1 * b0;
+    uint64_t p3 = a1 * b1;
+    uint64_t mid = (p0 >> 32) + (uint32_t)p1 + (uint32_t)p2;
+    return p3 + (p1 >> 32) + (p2 >> 32) + (mid >> 32);
+}
+
+lean_sbf_ti_int __multi3(lean_sbf_ti_int aa, lean_sbf_ti_int bb) {
+    lean_sbf_du_int a = (lean_sbf_du_int)aa;
+    lean_sbf_du_int b = (lean_sbf_du_int)bb;
+    uint64_t al = (uint64_t)a;
+    uint64_t ah = (uint64_t)(a >> 64);
+    uint64_t bl = (uint64_t)b;
+    uint64_t bh = (uint64_t)(b >> 64);
+    uint64_t lo = al * bl;
+    uint64_t hi = lean_sbf_mul64_high(al, bl) + al * bh + ah * bl;
+    return (lean_sbf_ti_int)(((lean_sbf_du_int)hi << 64) | lo);
+}
+
+/* ===========================================================================
    Lean object layout (mirrors the freestanding runtime's typedefs)
    =========================================================================*/
 

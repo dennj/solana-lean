@@ -35,8 +35,17 @@ static const uint8_t *skip_account(const uint8_t *p) {
 }
 
 uint64_t entrypoint(const uint8_t *input) {
+#ifdef LEAN_SBF_ENTRYPOINT_TRACE
+    sol_log_64_(0x1EA0u, 0, 0, 0, 0);
+#endif
     lean_sbf_module_init(/* builtin = */ 1);
+#ifdef LEAN_SBF_ENTRYPOINT_TRACE
+    sol_log_64_(0x1EA1u, 0, 0, 0, 0);
+#endif
     uint64_t result = lean_sbf_invoke_entry(input);
+#ifdef LEAN_SBF_ENTRYPOINT_TRACE
+    sol_log_64_(0x1EA2u, 0, 0, 0, result);
+#endif
 
     /* Extract data_len so the validator log line is interpretable. */
     const uint8_t *p = input;

@@ -24,7 +24,10 @@ register_unsupported_on_target IO.FS.readFile "sbf-*" "uses host filesystem"
 ```
 -/
 elab "register_unsupported_on_target" decl:ident pattern:str reason:str : command => do
-  modifyEnv (Compiler.unsupportedOnTargetExt.addEntry · (decl.getId,
+  let declName := decl.getId
+  unless (← getEnv).contains declName do
+    throwErrorAt decl "unknown declaration `{declName}` in unsupported-target policy"
+  modifyEnv (Compiler.unsupportedOnTargetExt.addEntry · (declName,
     { triplePattern := pattern.getString, reason := reason.getString }))
 
 end Lean
