@@ -25,13 +25,14 @@ open System
 /--
 The `CrossTargetSpec` for WebAssembly (WASI-preview1) programs.
 
-* `triple = wasm32-wasip1`
+* `triple = wasm32-wasip1` for WASI command modules, or
+  `wasm32-unknown-unknown` for browser reactor modules.
 * `outputExt = "wasm"`
 * `entrySymbol` empty — WASM programs use varying entry conventions.
 * Validator checks the file begins with the 4-byte magic `\\0asm`.
 -/
-public def wasmSpec : CrossTargetSpec where
-  triple    := "wasm32-wasip1"
+public def wasmSpec (triple : String := "wasm32-wasip1") : CrossTargetSpec where
+  triple    := triple
   outputExt := "wasm"
   validate fp := do
     unless ← fp.pathExists do
@@ -46,17 +47,17 @@ public def wasmSpec : CrossTargetSpec where
       error s!"wasm_program: {fp} is missing the WebAssembly magic header"
 
 private def runWasmCompile
-    (rootLean : FilePath) (outFile : FilePath)
+    (rootLean : FilePath) (outFile : FilePath) (spec : CrossTargetSpec)
     (leanPath : SearchPath) (lean : FilePath) (leanc : FilePath)
     : LogIO Unit := do
   let outDir := outFile.parent.getD ("." : FilePath)
   let bcFile := outDir / FilePath.withExtension outFile.fileName.get! "bc"
-  compileLeanCrossModule bcFile rootLean wasmSpec leanPath lean
-  buildCrossProgram outFile #[bcFile] wasmSpec leanc.toString
+  compileLeanCrossModule bcFile rootLean spec leanPath lean
+  buildCrossProgram outFile #[bcFile] spec leanc.toString
 
 /--
-Phase 3 helper: build a WebAssembly program from a single root module
-referenced via `target` in a `lakefile.lean`. Kept for back-compat.
+Build a WebAssembly program from a single root module referenced via `target`
+in a `lakefile.lean`. Kept for back-compat.
 -/
 public def buildWasmProgram (mod : Module) : FetchM (Job FilePath) :=
   withRegisterJob s!"{mod.name}:wasm" do
@@ -65,7 +66,7 @@ public def buildWasmProgram (mod : Module) : FetchM (Job FilePath) :=
     let leanc := (← getLeanInstall).leanc
     let outFile := mod.pkg.buildDir / "wasm" / s!"{mod.name.toString}.wasm"
     (← mod.olean.fetch).mapM fun _oleanPath => do
-      runWasmCompile mod.leanFile outFile leanPath lean leanc
+      runWasmCompile mod.leanFile outFile (wasmSpec) leanPath lean leanc
       pure outFile
 
 /-- Build a `wasm_program` declaration into a deployable `.wasm`. -/
@@ -75,8 +76,9 @@ def WasmProgram.recBuildExe (self : WasmProgram) : FetchM (Job FilePath) :=
     let lean ← getLean
     let leanc := (← getLeanInstall).leanc
     let outFile := self.file
+    let spec := wasmSpec self.config.triple
     (← self.root.olean.fetch).mapM fun _oleanPath => do
-      runWasmCompile self.root.leanFile outFile leanPath lean leanc
+      runWasmCompile self.root.leanFile outFile spec leanPath lean leanc
       pure outFile
 
 /-- The facet configuration for the builtin `WasmProgram.wasmFacet`. -/

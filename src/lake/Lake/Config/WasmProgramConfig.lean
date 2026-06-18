@@ -17,7 +17,8 @@ open Lean System
 /--
 A WebAssembly (WASI-preview1) program target's declarative configuration.
 A WASM program is a Lean library cross-compiled to a freestanding `.wasm`
-module via `wasm32-wasip1`.
+module. Defaults to `wasm32-wasip1`; use `wasm32-unknown-unknown` for the
+browser/reactor runtime adapter.
 -/
 public configuration WasmProgramConfig (name : Name) extends LeanConfig where
   /-- The subdirectory of the package's source directory containing the
@@ -32,6 +33,10 @@ public configuration WasmProgramConfig (name : Name) extends LeanConfig where
   /-- The file name (without `.wasm` extension) of the linked artifact.
       Defaults to the target name with any `.` replaced with a `-`. -/
   programName : String := name.toStringWithSep "-" (escape := false)
+
+  /-- LLVM target triple. `wasm32-wasip1` builds a WASI command module;
+      `wasm32-unknown-unknown` builds a browser reactor module. -/
+  triple : String := "wasm32-wasip1"
 
   /-- An `Array` of targets to build before the program's modules. -/
   needs : Array PartialBuildKey := #[]

@@ -755,6 +755,7 @@ endif()
 add_subdirectory(runtime/freestanding)
 add_subdirectory(runtime/sbf)
 add_subdirectory(runtime/wasm)
+add_subdirectory(runtime/web)
 
 if(STAGE GREATER 1)
   # reuse C++ parts, which don't change

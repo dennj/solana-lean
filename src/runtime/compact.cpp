@@ -17,12 +17,13 @@ Author: Leonardo de Moura
 #ifdef LEAN_WINDOWS
 #include <windows.h>  // must precede <psapi.h>: it relies on `WINBOOL`/`DWORD`/`WINAPI` from here
 #include <psapi.h>
-#else
+#elif !defined(__wasm__)
 #include <sys/mman.h>
 #include <dlfcn.h>
 #endif
 
-#ifdef __APPLE__
+#if defined(__wasm__)
+#elif defined(__APPLE__)
 #include <mach-o/dyld.h>
 #include <mach-o/getsect.h>
 #elif !defined(LEAN_WINDOWS)
@@ -70,7 +71,9 @@ struct object_compactor::max_sharing_table {
 
 LEAN_EXPORT std::vector<lib_info> get_loaded_libs() {
     std::vector<lib_info> libs;
-#ifdef LEAN_WINDOWS
+#if defined(__wasm__)
+    return libs;
+#elif defined(LEAN_WINDOWS)
     HANDLE proc = GetCurrentProcess();
     std::vector<HMODULE> mods(128);
     DWORD needed;

@@ -56,9 +56,8 @@ private def runSolanaCompile
   buildCrossProgram outFile #[bcFile] solanaSpec leanc.toString
 
 /--
-Phase 2 helper: build a Solana SBF program from a single root module
-referenced via `target` in a `lakefile.lean`. Kept for back-compat with
-the helper-function lakefile shape.
+Build a Solana SBF program from a single root module referenced via `target` in
+a `lakefile.lean`. Kept for back-compat with the helper-function lakefile shape.
 -/
 public def buildSolanaProgram (mod : Module) : FetchM (Job FilePath) :=
   withRegisterJob s!"{mod.name}:solana" do

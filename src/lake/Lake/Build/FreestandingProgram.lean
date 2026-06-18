@@ -49,9 +49,8 @@ private def mkFreestandingSpec
         error s!"freestanding_program: {fp} is missing the ELF magic header" }
 
 /--
-Phase 4 helper: build a freestanding cross-target ELF from given Lean
-modules and auxiliary sources. Kept for back-compat with the
-helper-function lakefile shape.
+Build a freestanding cross-target ELF from given Lean modules and auxiliary
+sources. Kept for back-compat with the helper-function lakefile shape.
 -/
 public def buildFreestandingProgram
     (mods          : Array Module)

@@ -78,7 +78,22 @@ void *kernel_write_sepc(uint64_t sepc) {
 
 void *kernel_set_timer(void *unit) {
     (void)unit;
-    *clint_mtimecmp = *clint_mtime + timer_interval;
+    /* OpenSBI 3.0 PMP-protects the CLINT region from S-mode (boot log shows
+       `Domain0 Region02 0x02000000-0x0200ffff M: (I,R,W) S/U: ()` — no S/U
+       access). Direct loads from `clint_mtime`/`clint_mtimecmp` therefore
+       trap with scause=5 (load access fault). Use the SBI Time extension
+       (EID = 'TIME', FID = 0) to program the next timer, and the user-mode
+       `time` CSR (`Zicntr`, advertised in the boot log) to read the current
+       time. */
+    uint64_t now;
+    __asm__ volatile ("csrr %0, time" : "=r"(now));
+    register uintptr_t a7 __asm__("a7") = 0x54494D45UL; /* 'TIME' EID */
+    register uintptr_t a6 __asm__("a6") = 0;            /* FID 0 = set_timer */
+    register uint64_t  a0 __asm__("a0") = now + timer_interval;
+    __asm__ volatile ("ecall"
+                      : "+r"(a0)
+                      : "r"(a6), "r"(a7)
+                      : "memory");
     __asm__ volatile ("csrs sie, %0" :: "r"(1ULL << 5) : "memory");
     return (void *)1;
 }

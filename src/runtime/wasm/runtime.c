@@ -10,6 +10,34 @@ plus `initialize_Std_Wasm`. The freestanding runtime is reused as-is.
 #include <stdint.h>
 #include <stddef.h>
 
+typedef unsigned __int128 lean_wasm_du_int;
+typedef __int128 lean_wasm_ti_int;
+
+static uint64_t lean_wasm_mul64_high(uint64_t a, uint64_t b) {
+    uint64_t a0 = (uint32_t)a;
+    uint64_t a1 = a >> 32;
+    uint64_t b0 = (uint32_t)b;
+    uint64_t b1 = b >> 32;
+    uint64_t p0 = a0 * b0;
+    uint64_t p1 = a0 * b1;
+    uint64_t p2 = a1 * b0;
+    uint64_t p3 = a1 * b1;
+    uint64_t mid = (p0 >> 32) + (uint32_t)p1 + (uint32_t)p2;
+    return p3 + (p1 >> 32) + (p2 >> 32) + (mid >> 32);
+}
+
+lean_wasm_ti_int __multi3(lean_wasm_ti_int aa, lean_wasm_ti_int bb) {
+    lean_wasm_du_int a = (lean_wasm_du_int)aa;
+    lean_wasm_du_int b = (lean_wasm_du_int)bb;
+    uint64_t al = (uint64_t)a;
+    uint64_t ah = (uint64_t)(a >> 64);
+    uint64_t bl = (uint64_t)b;
+    uint64_t bh = (uint64_t)(b >> 64);
+    uint64_t lo = al * bl;
+    uint64_t hi = lean_wasm_mul64_high(al, bl) + al * bh + ah * bl;
+    return (lean_wasm_ti_int)(((lean_wasm_du_int)hi << 64) | lo);
+}
+
 typedef struct {
     int      m_rc;
     unsigned m_cs_sz:16;
@@ -85,9 +113,8 @@ void lean_freestanding_panic(const char *what, uint64_t a, uint64_t b) {
 /* ===========================================================================
    Module initialiser: Std.Wasm
    ===========================================================================
-   Mirrors `initialize_Std_Solana` — Lean's emit calls this when the
-   user program imports `Std.Wasm`. No host-side state; return the
-   IO ok sentinel. */
+   Lean's code generator calls this when the user program imports
+   `Std.Wasm`. No host-side state is needed; return the IO ok sentinel. */
 
 extern void *lean_io_result_mk_ok(void *value);
 extern void *lean_box(size_t n);
@@ -98,10 +125,9 @@ void *initialize_Std_Wasm(uint8_t builtin, void *world) {
 }
 
 /* ===========================================================================
-   Std.Wasm.log (the WASM analogue of Std.Solana.msg)
+   Std.Wasm.log
    ===========================================================================
-   Forward a Lean `String` to WASI fd_write on stderr. Same shape as
-   `lean_sol_log` in sbf/runtime.c.
+   Forward a Lean `String` to WASI fd_write on stderr.
 */
 
 /* `Std.Wasm.log : String → BaseIO Unit`. Lean's emit lowers

@@ -62,9 +62,11 @@ extern void lean_freestanding_panic(const char *what, uint64_t a, uint64_t b);
 extern void lean_freestanding_log(const char *msg, uint64_t len);
 
 /* Anza's SBF clang (platform-tools v1.43) crashes while lowering
-   `__builtin_return_address` for BPF. Keep return-address metadata on targets
-   that support it, but make panic-site metadata explicit zero on SBF. */
-#if defined(__BPF__) || defined(__bpf__)
+   `__builtin_return_address` for BPF; non-Emscripten wasm32 clang
+   refuses it outright ("hasn't implemented"). Keep return-address
+   metadata on targets that support it, but stub it to zero on the
+   freestanding cross targets that don't. */
+#if defined(__BPF__) || defined(__bpf__) || defined(__wasm__) || defined(__wasm32__) || defined(__wasm64__)
 #define LEAN_FREESTANDING_RETURN_ADDRESS(depth) ((uint64_t)0)
 #else
 #define LEAN_FREESTANDING_RETURN_ADDRESS(depth) ((uint64_t)(uintptr_t)__builtin_return_address(depth))
@@ -358,7 +360,11 @@ void *lean_box(size_t n) {
     return (void *)((n << 1) | 1);
 }
 
-uint64_t lean_unbox(void *o) {
+/* Return type is `size_t` to mirror the host `lean.h`
+   (`static inline size_t lean_unbox(lean_object *)`): the codegen declares the
+   call with the target's `size_t` width (i32 on wasm32, i64 on 64-bit), so a
+   hardcoded `uint64_t` here mismatches the emitted signature on wasm32. */
+size_t lean_unbox(void *o) {
     return ((uintptr_t)o) >> 1;
 }
 
@@ -1667,19 +1673,21 @@ void *lean_string_from_utf8_unchecked(void *bytes) {
    pick them up automatically without duplication.
 */
 
-uint64_t lean_uint64_add(uint64_t a, uint64_t b) { return a + b; }
-uint64_t lean_uint64_sub(uint64_t a, uint64_t b) { return a - b; }
-uint64_t lean_uint64_mul(uint64_t a, uint64_t b) { return a * b; }
-uint64_t lean_uint64_div(uint64_t a, uint64_t b) { return b == 0 ? 0 : a / b; }
-uint64_t lean_uint64_mod(uint64_t a, uint64_t b) { return b == 0 ? a : a % b; }
-uint64_t lean_uint64_xor(uint64_t a, uint64_t b) { return a ^ b; }
-uint64_t lean_uint64_lor(uint64_t a, uint64_t b) { return a | b; }
-uint64_t lean_uint64_land(uint64_t a, uint64_t b) { return a & b; }
-uint64_t lean_uint64_shift_left(uint64_t a, uint64_t b) { return a << (b & 63); }
-uint64_t lean_uint64_shift_right(uint64_t a, uint64_t b) { return a >> (b & 63); }
-uint8_t  lean_uint64_dec_eq(uint64_t a, uint64_t b) { return a == b; }
-uint8_t  lean_uint64_dec_lt(uint64_t a, uint64_t b) { return a < b; }
-uint8_t  lean_uint64_dec_le(uint64_t a, uint64_t b) { return a <= b; }
+#define LEAN_FREESTANDING_SCALAR_INLINE __attribute__((always_inline))
+
+LEAN_FREESTANDING_SCALAR_INLINE uint64_t lean_uint64_add(uint64_t a, uint64_t b) { return a + b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint64_t lean_uint64_sub(uint64_t a, uint64_t b) { return a - b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint64_t lean_uint64_mul(uint64_t a, uint64_t b) { return a * b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint64_t lean_uint64_div(uint64_t a, uint64_t b) { return b == 0 ? 0 : a / b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint64_t lean_uint64_mod(uint64_t a, uint64_t b) { return b == 0 ? a : a % b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint64_t lean_uint64_xor(uint64_t a, uint64_t b) { return a ^ b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint64_t lean_uint64_lor(uint64_t a, uint64_t b) { return a | b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint64_t lean_uint64_land(uint64_t a, uint64_t b) { return a & b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint64_t lean_uint64_shift_left(uint64_t a, uint64_t b) { return a << (b & 63); }
+LEAN_FREESTANDING_SCALAR_INLINE uint64_t lean_uint64_shift_right(uint64_t a, uint64_t b) { return a >> (b & 63); }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t  lean_uint64_dec_eq(uint64_t a, uint64_t b) { return a == b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t  lean_uint64_dec_lt(uint64_t a, uint64_t b) { return a < b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t  lean_uint64_dec_le(uint64_t a, uint64_t b) { return a <= b; }
 uint64_t lean_uint64_mix_hash(uint64_t h, uint64_t k) {
     uint64_t m = 0xc6a4a7935bd1e995ULL;
     uint64_t r = 47;
@@ -1690,21 +1698,22 @@ uint64_t lean_uint64_mix_hash(uint64_t h, uint64_t k) {
     h *= m;
     return h;
 }
-uint8_t  lean_uint64_to_uint8(uint64_t a) { return (uint8_t)a; }
-uint64_t lean_uint8_to_uint64(uint8_t a) { return (uint64_t)a; }
-uint8_t  lean_uint8_dec_eq(uint8_t a, uint8_t b) { return a == b; }
-uint8_t  lean_uint8_dec_lt(uint8_t a, uint8_t b) { return a < b; }
-uint8_t  lean_uint8_dec_le(uint8_t a, uint8_t b) { return a <= b; }
-uint8_t  lean_uint8_add(uint8_t a, uint8_t b) { return a + b; }
-uint8_t  lean_uint8_sub(uint8_t a, uint8_t b) { return a - b; }
-uint8_t  lean_uint8_mul(uint8_t a, uint8_t b) { return a * b; }
-uint8_t  lean_uint8_div(uint8_t a, uint8_t b) { return b == 0 ? 0 : a / b; }
-uint8_t  lean_uint8_mod(uint8_t a, uint8_t b) { return b == 0 ? a : a % b; }
-uint8_t  lean_uint8_xor(uint8_t a, uint8_t b) { return a ^ b; }
-uint8_t  lean_uint8_land(uint8_t a, uint8_t b) { return a & b; }
-uint8_t  lean_uint8_lor (uint8_t a, uint8_t b) { return a | b; }
-uint8_t  lean_uint8_shift_left (uint8_t a, uint8_t b) { return (uint8_t)(a << (b & 7)); }
-uint8_t  lean_uint8_shift_right(uint8_t a, uint8_t b) { return (uint8_t)(a >> (b & 7)); }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t  lean_uint64_to_uint8(uint64_t a) { return (uint8_t)a; }
+LEAN_FREESTANDING_SCALAR_INLINE uint64_t lean_uint8_to_uint64(uint8_t a) { return (uint64_t)a; }
+LEAN_FREESTANDING_SCALAR_INLINE uint32_t lean_uint8_to_uint32(uint8_t a) { return (uint32_t)a; }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t  lean_uint8_dec_eq(uint8_t a, uint8_t b) { return a == b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t  lean_uint8_dec_lt(uint8_t a, uint8_t b) { return a < b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t  lean_uint8_dec_le(uint8_t a, uint8_t b) { return a <= b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t  lean_uint8_add(uint8_t a, uint8_t b) { return a + b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t  lean_uint8_sub(uint8_t a, uint8_t b) { return a - b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t  lean_uint8_mul(uint8_t a, uint8_t b) { return a * b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t  lean_uint8_div(uint8_t a, uint8_t b) { return b == 0 ? 0 : a / b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t  lean_uint8_mod(uint8_t a, uint8_t b) { return b == 0 ? a : a % b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t  lean_uint8_xor(uint8_t a, uint8_t b) { return a ^ b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t  lean_uint8_land(uint8_t a, uint8_t b) { return a & b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t  lean_uint8_lor (uint8_t a, uint8_t b) { return a | b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t  lean_uint8_shift_left (uint8_t a, uint8_t b) { return (uint8_t)(a << (b & 7)); }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t  lean_uint8_shift_right(uint8_t a, uint8_t b) { return (uint8_t)(a >> (b & 7)); }
 /* `usize` is target-dependent (`size_t` in C terms): 64-bit on host/sbf,
    32-bit on wasm32. The bitcode-side ABI matches whatever the target's
    data layout says, so use `size_t` to track the target's pointer width
@@ -1719,46 +1728,46 @@ static void lean_freestanding_nat_panic(const char *what) {
     __builtin_unreachable();
 }
 
-size_t  lean_usize_add(size_t a, size_t b) { return a + b; }
-size_t  lean_usize_sub(size_t a, size_t b) { return a - b; }
-size_t  lean_usize_mul(size_t a, size_t b) { return a * b; }
-uint8_t lean_usize_dec_eq(size_t a, size_t b) { return a == b; }
-uint8_t lean_usize_dec_lt(size_t a, size_t b) { return a <  b; }
-uint8_t lean_usize_dec_le(size_t a, size_t b) { return a <= b; }
+LEAN_FREESTANDING_SCALAR_INLINE size_t  lean_usize_add(size_t a, size_t b) { return a + b; }
+LEAN_FREESTANDING_SCALAR_INLINE size_t  lean_usize_sub(size_t a, size_t b) { return a - b; }
+LEAN_FREESTANDING_SCALAR_INLINE size_t  lean_usize_mul(size_t a, size_t b) { return a * b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t lean_usize_dec_eq(size_t a, size_t b) { return a == b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t lean_usize_dec_lt(size_t a, size_t b) { return a <  b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t lean_usize_dec_le(size_t a, size_t b) { return a <= b; }
 
-uint8_t  lean_usize_to_uint8 (size_t a) { return (uint8_t)a; }
-uint16_t lean_usize_to_uint16(size_t a) { return (uint16_t)a; }
-uint32_t lean_usize_to_uint32(size_t a) { return (uint32_t)a; }
-uint64_t lean_usize_to_uint64(size_t a) { return (uint64_t)a; }
-size_t lean_uint8_to_usize  (uint8_t  a) { return (size_t)a; }
-size_t lean_uint16_to_usize (uint16_t a) { return (size_t)a; }
-size_t lean_uint32_to_usize (uint32_t a) { return (size_t)a; }
-size_t lean_uint64_to_usize (uint64_t a) { return (size_t)a; }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t  lean_usize_to_uint8 (size_t a) { return (uint8_t)a; }
+LEAN_FREESTANDING_SCALAR_INLINE uint16_t lean_usize_to_uint16(size_t a) { return (uint16_t)a; }
+LEAN_FREESTANDING_SCALAR_INLINE uint32_t lean_usize_to_uint32(size_t a) { return (uint32_t)a; }
+LEAN_FREESTANDING_SCALAR_INLINE uint64_t lean_usize_to_uint64(size_t a) { return (uint64_t)a; }
+LEAN_FREESTANDING_SCALAR_INLINE size_t lean_uint8_to_usize  (uint8_t  a) { return (size_t)a; }
+LEAN_FREESTANDING_SCALAR_INLINE size_t lean_uint16_to_usize (uint16_t a) { return (size_t)a; }
+LEAN_FREESTANDING_SCALAR_INLINE size_t lean_uint32_to_usize (uint32_t a) { return (size_t)a; }
+LEAN_FREESTANDING_SCALAR_INLINE size_t lean_uint64_to_usize (uint64_t a) { return (size_t)a; }
 
 /* UInt32 arithmetic / comparison set (mirrors host lean.h inline defs). */
-uint32_t lean_uint32_add(uint32_t a, uint32_t b) { return a + b; }
-uint32_t lean_uint32_sub(uint32_t a, uint32_t b) { return a - b; }
-uint32_t lean_uint32_mul(uint32_t a, uint32_t b) { return a * b; }
-uint32_t lean_uint32_div(uint32_t a, uint32_t b) { return b == 0 ? 0  : a / b; }
-uint32_t lean_uint32_mod(uint32_t a, uint32_t b) { return b == 0 ? a  : a % b; }
-uint32_t lean_uint32_land(uint32_t a, uint32_t b) { return a & b; }
-uint32_t lean_uint32_lor (uint32_t a, uint32_t b) { return a | b; }
-uint32_t lean_uint32_xor (uint32_t a, uint32_t b) { return a ^ b; }
-uint32_t lean_uint32_shift_left (uint32_t a, uint32_t b) { return a << (b & 31); }
-uint32_t lean_uint32_shift_right(uint32_t a, uint32_t b) { return a >> (b & 31); }
-uint8_t  lean_uint32_dec_eq(uint32_t a, uint32_t b) { return a == b; }
-uint8_t  lean_uint32_dec_lt(uint32_t a, uint32_t b) { return a <  b; }
-uint8_t  lean_uint32_dec_le(uint32_t a, uint32_t b) { return a <= b; }
-uint8_t  lean_uint32_to_uint8 (uint32_t a) { return (uint8_t)a; }
-uint16_t lean_uint32_to_uint16(uint32_t a) { return (uint16_t)a; }
-uint64_t lean_uint32_to_uint64(uint32_t a) { return (uint64_t)a; }
+LEAN_FREESTANDING_SCALAR_INLINE uint32_t lean_uint32_add(uint32_t a, uint32_t b) { return a + b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint32_t lean_uint32_sub(uint32_t a, uint32_t b) { return a - b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint32_t lean_uint32_mul(uint32_t a, uint32_t b) { return a * b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint32_t lean_uint32_div(uint32_t a, uint32_t b) { return b == 0 ? 0  : a / b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint32_t lean_uint32_mod(uint32_t a, uint32_t b) { return b == 0 ? a  : a % b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint32_t lean_uint32_land(uint32_t a, uint32_t b) { return a & b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint32_t lean_uint32_lor (uint32_t a, uint32_t b) { return a | b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint32_t lean_uint32_xor (uint32_t a, uint32_t b) { return a ^ b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint32_t lean_uint32_shift_left (uint32_t a, uint32_t b) { return a << (b & 31); }
+LEAN_FREESTANDING_SCALAR_INLINE uint32_t lean_uint32_shift_right(uint32_t a, uint32_t b) { return a >> (b & 31); }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t  lean_uint32_dec_eq(uint32_t a, uint32_t b) { return a == b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t  lean_uint32_dec_lt(uint32_t a, uint32_t b) { return a <  b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t  lean_uint32_dec_le(uint32_t a, uint32_t b) { return a <= b; }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t  lean_uint32_to_uint8 (uint32_t a) { return (uint8_t)a; }
+LEAN_FREESTANDING_SCALAR_INLINE uint16_t lean_uint32_to_uint16(uint32_t a) { return (uint16_t)a; }
+LEAN_FREESTANDING_SCALAR_INLINE uint64_t lean_uint32_to_uint64(uint32_t a) { return (uint64_t)a; }
 
-uint64_t lean_uint16_to_uint64(uint16_t a) { return (uint64_t)a; }
-uint32_t lean_uint16_to_uint32(uint16_t a) { return (uint32_t)a; }
-uint8_t  lean_uint16_to_uint8 (uint16_t a) { return (uint8_t)a; }
-uint16_t lean_uint8_to_uint16 (uint8_t  a) { return (uint16_t)a; }
-uint16_t lean_uint64_to_uint16(uint64_t a) { return (uint16_t)a; }
-uint32_t lean_uint64_to_uint32(uint64_t a) { return (uint32_t)a; }
+LEAN_FREESTANDING_SCALAR_INLINE uint64_t lean_uint16_to_uint64(uint16_t a) { return (uint64_t)a; }
+LEAN_FREESTANDING_SCALAR_INLINE uint32_t lean_uint16_to_uint32(uint16_t a) { return (uint32_t)a; }
+LEAN_FREESTANDING_SCALAR_INLINE uint8_t  lean_uint16_to_uint8 (uint16_t a) { return (uint8_t)a; }
+LEAN_FREESTANDING_SCALAR_INLINE uint16_t lean_uint8_to_uint16 (uint8_t  a) { return (uint16_t)a; }
+LEAN_FREESTANDING_SCALAR_INLINE uint16_t lean_uint64_to_uint16(uint64_t a) { return (uint16_t)a; }
+LEAN_FREESTANDING_SCALAR_INLINE uint32_t lean_uint64_to_uint32(uint64_t a) { return (uint32_t)a; }
 
 /* Tagged-scalar box / unbox for `usize` and `uint32`. We don't use the
    host's ctor-tail layout because the freestanding runtime caps small-Nat
@@ -1814,6 +1823,24 @@ uint8_t lean_string_lt(void *s1, void *s2) {
         if (ac != bc) return ac < bc;
     }
     return asz < bsz;
+}
+
+uint8_t lean_string_compare(void *s1, void *s2) {
+    if (s1 == s2) return 1;
+    lean_string_object *a = (lean_string_object *)s1;
+    lean_string_object *b = (lean_string_object *)s2;
+    size_t asz = a->m_size == 0 ? 0 : a->m_size - 1;
+    size_t bsz = b->m_size == 0 ? 0 : b->m_size - 1;
+    size_t n = asz < bsz ? asz : bsz;
+    for (size_t i = 0; i < n; ++i) {
+        unsigned char ac = (unsigned char)a->m_data[i];
+        unsigned char bc = (unsigned char)b->m_data[i];
+        if (ac < bc) return 0;
+        if (ac > bc) return 2;
+    }
+    if (asz < bsz) return 0;
+    if (asz > bsz) return 2;
+    return 1;
 }
 
 void *lean_string_mk(void *cs) {

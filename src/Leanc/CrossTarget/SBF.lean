@@ -159,7 +159,7 @@ unsigned long long lean_sbf_invoke_entry(const unsigned char *input) {
     objects := objects.push (← compileRuntimeC glueC "lean_sbf_glue.o")
 
     let exportsMap := tmp / "sbf_exports.map"
-    IO.FS.writeFile exportsMap "{\n  global:\n    entrypoint;\n  local:\n    *;\n};\n"
+    IO.FS.writeFile exportsMap "{\n  global:\n    entrypoint;\n    lean_sol_entry_typed;\n  local:\n    *;\n};\n"
 
     let mut linkArgs : Array String :=
       #["-z", "notext", "-shared", "--Bdynamic",

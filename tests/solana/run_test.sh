@@ -168,7 +168,7 @@ check_log_many() {
   cp "$SRCDIR/$src" .
   run lean --target=sbf-solana-solana --bc="$stem.bc" "$src"
   leanc_check_stack "$stem" --target=sbf-solana-solana "$stem.bc" -o "$stem.so"
-  local syms; syms=$("$READELF" --dyn-syms "$stem.so")
+  local syms; syms=$("$READELF" --syms "$stem.so")
   grep -Fq 'lean_sol_log' <<<"$syms" \
     || fail "$stem.so does not reference lean_sol_log:\n$syms"
   grep -Fq 'lean_sol_entry_typed' <<<"$syms" \
@@ -197,7 +197,7 @@ check_invoke_program() {
   cp "$SRCDIR/$src" .
   run lean --target=sbf-solana-solana --bc="$stem.bc" "$src"
   leanc_check_stack "$stem" --target=sbf-solana-solana "$stem.bc" -o "$stem.so"
-  local syms; syms=$("$READELF" --dyn-syms "$stem.so")
+  local syms; syms=$("$READELF" --syms "$stem.so")
   echo "$syms" | grep -q ' lean_sbf_invoke_signed$' \
     || fail "$stem.so missing lean_sbf_invoke_signed (CPI runtime)\n$syms"
   echo "$syms" | grep -q ' sol_invoke_signed_c$' \
@@ -214,7 +214,7 @@ check_pda_program() {
   cp "$SRCDIR/$src" .
   run lean --target=sbf-solana-solana --bc="$stem.bc" "$src"
   leanc_check_stack "$stem" --target=sbf-solana-solana "$stem.bc" -o "$stem.so"
-  local syms; syms=$("$READELF" --dyn-syms "$stem.so")
+  local syms; syms=$("$READELF" --syms "$stem.so")
   echo "$syms" | grep -q ' lean_sbf_find_program_address$' \
     || fail "$stem.so missing lean_sbf_find_program_address\n$syms"
   echo "$syms" | grep -q ' sol_try_find_program_address$' \
@@ -232,7 +232,7 @@ check_addressbook_program() {
   cp "$SRCDIR/$src" .
   run lean --target=sbf-solana-solana --bc="$stem.bc" "$src"
   leanc_check_stack "$stem" --target=sbf-solana-solana "$stem.bc" -o "$stem.so"
-  local syms; syms=$("$READELF" --dyn-syms "$stem.so")
+  local syms; syms=$("$READELF" --syms "$stem.so")
   for needle in lean_sol_log lean_sbf_find_program_address sol_try_find_program_address; do
     echo "$syms" | grep -q " $needle\$" \
       || fail "$stem.so missing required symbol: $needle\n$syms"
@@ -251,7 +251,7 @@ check_counter_program() {
   cp "$SRCDIR/$src" .
   run lean --target=sbf-solana-solana --bc="$stem.bc" "$src"
   leanc_check_stack "$stem" --target=sbf-solana-solana "$stem.bc" -o "$stem.so"
-  local syms; syms=$("$READELF" --dyn-syms "$stem.so")
+  local syms; syms=$("$READELF" --syms "$stem.so")
   for needle in lean_sbf_read_data lean_sbf_write_data lean_sol_log; do
     echo "$syms" | grep -q " $needle\$" \
       || fail "$stem.so missing required mutator symbol: $needle\n$syms"

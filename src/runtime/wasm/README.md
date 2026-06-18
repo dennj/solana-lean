@@ -25,7 +25,7 @@ platform-tools fork).
   To support a new Lean runtime feature on wasm32:
 
   1. Identify which `LEAN_WASM_TRAP` entry blocks the feature (run the
-     probe, observe the `lean-wasm: unsupported Lean runtime symbol: …`
+     failing test and observe the `lean-wasm: unsupported Lean runtime symbol: …`
      diagnostic).
   2. Replace that stub with a real implementation, either here or as a
      shared piece of `runtime/freestanding/runtime.c`.
@@ -34,10 +34,11 @@ platform-tools fork).
 
 ## Heap layout
 
-Wasm32 builds get a static 512 KB linear-memory heap by default. The
-freestanding bump allocator is configured by passing
+Wasm32 builds reserve an 8 MiB initial linear memory and give the
+freestanding bump allocator a 4 MiB heap by default. The allocator is
+configured by passing
 `-DLEAN_FREESTANDING_HEAP_BASE=0x100000U
--DLEAN_FREESTANDING_HEAP_BYTES=524288U
+-DLEAN_FREESTANDING_HEAP_BYTES=4194304U
 -DLEAN_FREESTANDING_HEAP_PREFIX=8U` from
 `src/Leanc/CrossTarget/Wasm.lean`.
 
@@ -55,7 +56,7 @@ node --experimental-wasi-unstable-preview1 tests/wasm/run.mjs Foo.wasm
 # or wasmtime / wasmer
 ```
 
-Tests under `tests/wasm/` and the cross-target probes under
+Tests under `tests/wasm/` and the cross-target checks under
 `tests/stdlib_probes/` exercise the wasm32 path automatically when Node
 22+ is on the `PATH`.
 
