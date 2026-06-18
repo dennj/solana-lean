@@ -35,7 +35,7 @@ set(
   uv/signal.cpp
   openssl.cpp
 )
-list(APPEND RUNTIME_OBJS host_stubs_sbf.cpp host_stubs_wasm.cpp)
+list(APPEND RUNTIME_OBJS host_stubs_sbf.cpp host_stubs_wasm.cpp host_stubs_web.cpp)
 if(USE_MIMALLOC)
   list(APPEND RUNTIME_OBJS ${LEAN_BINARY_DIR}/../mimalloc/src/mimalloc/src/static.c)
   # Lean code includes it as `lean/mimalloc.h` but for compiling `static.c` itself, add original dir

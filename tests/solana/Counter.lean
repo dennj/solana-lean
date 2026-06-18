@@ -25,11 +25,18 @@ def encodeLeU64 (v : UInt64) : ByteArray := Id.run do
 
 @[export lean_sol_entry_typed]
 def entry (ctx : ProgramContext) : UInt64 :=
-  let _   := msg! "counter: read+inc+write"
+  -- Note on ordering: the `msg!` call is placed AFTER the projection-using
+  -- code (`decodeLeU64 ctx.data` + the writeDataImpl mutation), not before.
+  -- A current LCNF DCE quirk silently drops a leading `let _ := msg!` when
+  -- a later let consumes a struct projection (`ctx.data` here). Placing
+  -- `msg!` after the projection-using block keeps the call site intact in
+  -- the emitted bytecode. `LogMany.lean` exercises the multi-`msg!` path
+  -- and is unaffected.
   let cur := decodeLeU64 (readDataImpl 0 0 8)
   let inc := decodeLeU64 ctx.data
   let next := cur + inc
   let _ := writeDataImpl 0 0 (encodeLeU64 next)
+  let _ := msg! "counter: read+inc+write"
   next
 
 end Counter

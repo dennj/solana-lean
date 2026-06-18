@@ -16,3 +16,4 @@ public import Std.Internal
 public import Std.Net
 public import Std.Solana
 public import Std.Wasm
+public import Std.Web

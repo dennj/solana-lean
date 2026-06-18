@@ -48,5 +48,33 @@ void lean_freestanding_panic(const char *what, uint64_t a, uint64_t b) {
     __builtin_trap();
 }
 
+/* The CoW harness exercises real reference counting + reclamation. The
+   runtime defaults to arena lifetime (dec is no-op); opt in here so the
+   probes actually decrement, reclaim, and re-use freed blocks. */
+#define LEAN_FREESTANDING_RECLAIMING_RC 1
+
+/* Stubs for Lean stdlib externs that the freestanding runtime references
+   for Expr / Name specializations (DHashMap-over-Expr, DTreeMap-over-Name).
+   The CoW probes here exercise array invariants only and never reach these
+   code paths; if a stub is ever called, trap with a clear marker. */
+static void lean_test_unreachable_extern_stub(void) { __builtin_trap(); }
+void *lean_expr_mk_bvar(void *idx)                          { (void)idx; lean_test_unreachable_extern_stub(); return 0; }
+void *lean_expr_mk_fvar(void *fvarId)                       { (void)fvarId; lean_test_unreachable_extern_stub(); return 0; }
+void *lean_expr_mk_mvar(void *mvarId)                       { (void)mvarId; lean_test_unreachable_extern_stub(); return 0; }
+void *lean_expr_mk_sort(void *u)                            { (void)u; lean_test_unreachable_extern_stub(); return 0; }
+void *lean_expr_mk_const(void *c, void *lvls)               { (void)c; (void)lvls; lean_test_unreachable_extern_stub(); return 0; }
+void *lean_expr_mk_app(void *f, void *a)                    { (void)f; (void)a; lean_test_unreachable_extern_stub(); return 0; }
+void *lean_expr_mk_lambda(void *n, void *d, void *b, uint8_t bi)
+                                                            { (void)n; (void)d; (void)b; (void)bi; lean_test_unreachable_extern_stub(); return 0; }
+void *lean_expr_mk_forall(void *n, void *d, void *b, uint8_t bi)
+                                                            { (void)n; (void)d; (void)b; (void)bi; lean_test_unreachable_extern_stub(); return 0; }
+void *lean_expr_mk_let(void *n, void *t, void *v, void *b, uint8_t nondep)
+                                                            { (void)n; (void)t; (void)v; (void)b; (void)nondep; lean_test_unreachable_extern_stub(); return 0; }
+void *lean_expr_mk_lit(void *l)                             { (void)l; lean_test_unreachable_extern_stub(); return 0; }
+void *lean_expr_mk_mdata(void *m, void *e)                  { (void)m; (void)e; lean_test_unreachable_extern_stub(); return 0; }
+void *lean_expr_mk_proj(void *s, void *idx, void *e)        { (void)s; (void)idx; (void)e; lean_test_unreachable_extern_stub(); return 0; }
+uint8_t l___private_Lean_Data_Name_0__Lean_Name_quickCmpImpl(void *a, void *b)
+                                                            { (void)a; (void)b; lean_test_unreachable_extern_stub(); return 0; }
+
 /* Bring the runtime in. */
 #include "../../src/runtime/freestanding/runtime.c"

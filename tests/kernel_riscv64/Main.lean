@@ -91,16 +91,16 @@ def runActions : List Kernel.Action -> BaseIO Unit
     setSatpSv39 rootFrame.toUInt64
     runActions rest
   | .sfenceVma :: rest => do
-    sfenceVma
     log "Lean action: installed Sv39 root and fenced translations"
+    sfenceVma
     runActions rest
   | .probeBreakpointTrap :: rest => do
-    probeBreakpointTrap
     log "Lean action: breakpoint trap returned"
+    probeBreakpointTrap
     runActions rest
   | .installTimer :: rest => do
-    setTimer
     log "Lean action: installed timer interrupt"
+    setTimer
     runActions rest
   | .writeUserByte _ byte :: rest => do
     kernelPutNatByte byte
@@ -125,8 +125,11 @@ def entry : BaseIO UInt64 := do
 
 @[export lean_kernel_trap_entry_io]
 def trapEntry (boots scause sepc stval syscallNo syscallArg : UInt64) : BaseIO UInt64 := do
+  -- `scause` stays a `UInt64` because the kernel now models it as the raw
+  -- hardware register (bit 63 carries the interrupt flag). The remaining
+  -- four arguments fit comfortably in `Nat` and stay as before.
   match Kernel.trapStep? (Kernel.stateForTrapExport boots.toNat)
-      scause.toNat sepc.toNat stval.toNat syscallNo.toNat syscallArg.toNat with
+      scause sepc.toNat stval.toNat syscallNo.toNat syscallArg.toNat with
   | some out =>
     kernelLogTrap scause out.syscall
     let next := out.nextEpc.toUInt64
