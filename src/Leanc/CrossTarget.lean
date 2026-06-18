@@ -45,7 +45,7 @@ private def compileArgsWithValue : Array String :=
 
 private def linkArgsWithValue : Array String :=
   #["-L", "-l", "-T", "-e", "-u", "-z", "--entry", "--export",
-    "--undefined", "--initial-memory", "--max-memory", "--global-base",
+    "--export-if-defined", "--undefined", "--initial-memory", "--max-memory", "--global-base",
     "--allow-undefined-file", "-Xlinker"]
 
 private def isCompileArg (arg : String) : Bool :=
@@ -59,9 +59,11 @@ private def isCompileArg (arg : String) : Bool :=
 private def isLinkArg (arg : String) : Bool :=
   arg.startsWith "-L" || arg.startsWith "-l" ||
   arg.startsWith "--entry=" || arg.startsWith "--export=" ||
+  arg.startsWith "--export-if-defined=" ||
   arg.startsWith "--undefined=" || arg.startsWith "--initial-memory=" ||
   arg.startsWith "--max-memory=" || arg.startsWith "--global-base=" ||
   arg == "--no-entry" || arg == "--allow-undefined" ||
+  arg == "--import-undefined" || arg == "--export-memory" ||
   arg == "--strip-all" || arg == "--gc-sections"
 
 def parseCrossArgs (args : List String) (triple : String) : IO CrossArgs := do

@@ -1015,8 +1015,8 @@ def emitUProj (builder : LLVM.Builder llvmctx) (z : VarId) (i : Nat) (x : VarId)
 
 def emitOffset (builder : LLVM.Builder llvmctx)
     (n : Nat) (offset : Nat) : M llvmctx (LLVM.Value llvmctx) := do
-   -- TODO(bollu) : replace 8 with sizeof(void*)
-   let out ← constIntUnsigned 8
+   let ptrBytes := if (← getSizeTBits) == 32 then 4 else 8
+   let out ← constIntUnsigned ptrBytes
    let out ← LLVM.buildMul builder out (← constIntUnsigned n) "" -- sizeof(void*)*n
    LLVM.buildAdd builder out (← constIntUnsigned offset) "" -- sizeof(void*)*n+offset
 

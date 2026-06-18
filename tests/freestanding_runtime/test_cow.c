@@ -19,7 +19,7 @@
 /* --- Freestanding runtime public API surface we exercise. ---------- */
 
 extern void *lean_box(size_t n);
-extern uint64_t lean_unbox(void *o);
+extern size_t lean_unbox(void *o);
 
 extern void  lean_inc_ref(void *o);
 extern void  lean_dec_ref(void *o);

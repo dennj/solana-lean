@@ -31,13 +31,14 @@ extern uint64_t lean_strlen(const char *s);
 #define LEAN_WASM_TRAP_FN3(name, ret, t1, t2, t3)                            \
     ret name(t1 a, t2 b, t3 c) { (void)a; (void)b; (void)c; LEAN_WASM_TRAP(#name); }
 
-/* IO scaffolding / module init not provided on wasm32. */
+/* IO scaffolding / module init not provided on wasm32.
+   `lean_init_task_manager` / `lean_finalize_task_manager` are now
+   provided as no-ops by the freestanding runtime, so they are not
+   trapped here. */
 LEAN_WASM_TRAP_FN1(lean_io_result_show_error,         void,     void *)
 LEAN_WASM_TRAP_FN1(lean_initialize_runtime_module,    void *,   void *)
-LEAN_WASM_TRAP_FN0(lean_init_task_manager,            void)
-LEAN_WASM_TRAP_FN0(lean_finalize_task_manager,        void)
 
 /* Host-runtime decls deny-listed for wasm32-* (see src/Std/Wasm/Unsupported.lean). */
-LEAN_WASM_TRAP_FN1(lean_get_stdout,         void *,   void *)
+LEAN_WASM_TRAP_FN0(lean_get_stdout,         void *)
 LEAN_WASM_TRAP_FN1(lean_setup_args,         void,     void *)
 LEAN_WASM_TRAP_FN1(lean_set_panic_messages, void,     uint8_t)

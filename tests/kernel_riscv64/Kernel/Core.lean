@@ -142,51 +142,56 @@ structure Trap where
   tval : Nat
   syscall : Option Syscall
 
-def isPageFaultScause (scause : Nat) : Prop :=
+-- `scause` is a hardware register value carried as `UInt64` rather than `Nat`.
+-- The supervisor-timer interrupt cause `0x8000_0000_0000_0005` has bit 63 set
+-- and so does not fit in the freestanding small-Nat payload (capped at
+-- `2^63 - 1` so the tagged-pointer scheme can distinguish scalars from
+-- pointers). UInt64 sidesteps the cap entirely.
+def isPageFaultScause (scause : UInt64) : Prop :=
   scause = 12 ∨ scause = 13 ∨ scause = 15
 
-def supervisorTimerScause : Nat := 0x8000000000000005
+def supervisorTimerScause : UInt64 := 0x8000000000000005
 
 @[simp] private theorem breakpointScause_ne_supervisorTimerScause :
-    3 ≠ supervisorTimerScause := by decide
+    (3 : UInt64) ≠ supervisorTimerScause := by decide
 
 @[simp] private theorem supervisorTimerScause_ne_breakpointScause :
-    supervisorTimerScause ≠ 3 := by decide
+    supervisorTimerScause ≠ (3 : UInt64) := by decide
 
 @[simp] private theorem userEcallScause_ne_supervisorTimerScause :
-    8 ≠ supervisorTimerScause := by decide
+    (8 : UInt64) ≠ supervisorTimerScause := by decide
 
 @[simp] private theorem supervisorTimerScause_ne_userEcallScause :
-    supervisorTimerScause ≠ 8 := by decide
+    supervisorTimerScause ≠ (8 : UInt64) := by decide
 
 @[simp] private theorem pageFaultInstructionScause_ne_supervisorTimerScause :
-    12 ≠ supervisorTimerScause := by decide
+    (12 : UInt64) ≠ supervisorTimerScause := by decide
 
 @[simp] private theorem supervisorTimerScause_ne_pageFaultInstructionScause :
-    supervisorTimerScause ≠ 12 := by decide
+    supervisorTimerScause ≠ (12 : UInt64) := by decide
 
 @[simp] private theorem pageFaultLoadScause_ne_supervisorTimerScause :
-    13 ≠ supervisorTimerScause := by decide
+    (13 : UInt64) ≠ supervisorTimerScause := by decide
 
 @[simp] private theorem supervisorTimerScause_ne_pageFaultLoadScause :
-    supervisorTimerScause ≠ 13 := by decide
+    supervisorTimerScause ≠ (13 : UInt64) := by decide
 
 @[simp] private theorem pageFaultStoreScause_ne_supervisorTimerScause :
-    15 ≠ supervisorTimerScause := by decide
+    (15 : UInt64) ≠ supervisorTimerScause := by decide
 
 @[simp] private theorem supervisorTimerScause_ne_pageFaultStoreScause :
-    supervisorTimerScause ≠ 15 := by decide
+    supervisorTimerScause ≠ (15 : UInt64) := by decide
 
-private instance isPageFaultScause_decidable (scause : Nat) :
+private instance isPageFaultScause_decidable (scause : UInt64) :
     Decidable (isPageFaultScause scause) := by
   unfold isPageFaultScause
   infer_instance
 
-@[simp] private theorem isPageFaultScause_iff (scause : Nat) :
+@[simp] private theorem isPageFaultScause_iff (scause : UInt64) :
     isPageFaultScause scause ↔ scause = 12 ∨ scause = 13 ∨ scause = 15 := by
   rfl
 
-def decodeTrap (scause sepc stval syscallNo syscallArg : Nat) : Trap :=
+def decodeTrap (scause : UInt64) (sepc stval syscallNo syscallArg : Nat) : Trap :=
   { cause :=
       if scause = 3 then .breakpoint
       else if scause = 8 then .userEcall
@@ -570,7 +575,7 @@ def step (s : State) : Event -> KernelResult StepOutput
 def stateForTrapExport (boots : Nat) : State :=
   { (step initialState .boot).value.state with boots }
 
-def trapStep? (s : State) (scause sepc stval syscallNo syscallArg : Nat) :
+def trapStep? (s : State) (scause : UInt64) (sepc stval syscallNo syscallArg : Nat) :
     Option TrapStepOutput :=
   let trap := decodeTrap scause sepc stval syscallNo syscallArg
     match step s (.trap trap) with
@@ -616,7 +621,10 @@ structure KernelInvariant (s : State) : Prop where
 
 inductive RawEvent where
   | boot
-  | trap : Nat -> Nat -> Nat -> Nat -> Nat -> RawEvent
+  -- First field (scause) is `UInt64` to admit the hardware-defined
+  -- supervisor-timer cause `0x8000_0000_0000_0005` whose bit 63 is set;
+  -- the freestanding tagged-Nat representation tops out at `2^63 - 1`.
+  | trap : UInt64 -> Nat -> Nat -> Nat -> Nat -> RawEvent
 
 def decodeRawEvent : RawEvent -> Event
   | .boot => .boot
@@ -980,7 +988,8 @@ def HardwareTrapAdmissible : RawEvent -> Prop
   | .boot => False
 
 structure HardwareTrapEvent where
-  scause : Nat
+  -- `scause` matches the constructor field type in `RawEvent.trap` above.
+  scause : UInt64
   sepc : Nat
   stval : Nat
   syscallNo : Nat
@@ -2463,10 +2472,18 @@ private theorem kernel_closed_world_safety :
   have hBootInv := boot_invariant world.state
   have hTail := trap_closure_theorem (runKernel world.state [.boot]).state trace.tail
   refine ⟨?_, ?_, ?_, ?_⟩
-  · simpa [KernelWorld.runRaw, HardwareTrace.events, runKernel_append] using
-      hTail.invariantPreserved hBootInv
-  · simpa [KernelWorld.runRaw, HardwareTrace.events, runKernel_append] using
-      hTail.resourcesStable
+  -- Upstream simp normalizes `[boot] ++ xs ↔ boot :: xs` by default; if we let
+  -- it loop our `cons → singleton-append` rewrite would hit maxRecDepth. Use
+  -- `simp only` so only the listed lemmas fire (no cons↔append loop), then
+  -- the goal matches the typed term directly.
+  · simp only [KernelWorld.runRaw, HardwareTrace.events,
+               show RawEvent.boot :: trace.tail.events = [RawEvent.boot] ++ trace.tail.events from rfl,
+               runKernel_append]
+    exact hTail.invariantPreserved hBootInv
+  · simp only [KernelWorld.runRaw, HardwareTrace.events,
+               show RawEvent.boot :: trace.tail.events = [RawEvent.boot] ++ trace.tail.events from rfl,
+               runKernel_append]
+    exact hTail.resourcesStable
   · simpa [NoPanic, KernelWorld.runRaw] using runKernel_no_halt world.state trace.events
   · intro ob hob
     exact kernel_authority_conservation world trace ob hob

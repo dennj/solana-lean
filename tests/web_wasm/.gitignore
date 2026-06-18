@@ -1,0 +1,3 @@
+.build/
+Counter.wasm
+lean4lean_typechecker.wasm

@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 # WASM cross-compile golden test.
 #
 # Drives the full Lean -> freestanding wasm32-wasip1 .wasm pipeline:
@@ -16,7 +18,18 @@
 
 set -e
 
-LEAN_FEATURES=$(lean --features 2>/dev/null || true)
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+SRCDIR=$SCRIPT_DIR
+ROOT=$(cd "$SRCDIR/../.." && pwd)
+LEAN=${LEAN:-"$ROOT/build/release/stage1/bin/lean"}
+LEANC=${LEANC:-"$ROOT/build/release/stage1/bin/leanc"}
+
+if [ ! -x "$LEAN" ] || [ ! -x "$LEANC" ]; then
+  echo "SKIP: stage1 lean/leanc not found; build the stage1 target first"
+  exit 0
+fi
+
+LEAN_FEATURES=$("$LEAN" --features 2>/dev/null || true)
 if ! echo "$LEAN_FEATURES" | grep -q LLVM; then
   echo "SKIP: lean was built without -DLLVM=ON; WASM emit unavailable"
   exit 0
@@ -40,8 +53,7 @@ fail() { echo "TEST FAILED: $*"; exit 1; }
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-SRCDIR=$PWD
-cp run.mjs "$WORK/"
+cp "$SRCDIR/run.mjs" "$WORK/"
 cd "$WORK"
 
 # build_wasm <Foo.lean> -> produces Foo.wasm at $WORK/Foo.wasm.
@@ -49,8 +61,8 @@ build_wasm() {
   local src="$1"
   local stem="${src%.lean}"
   cp "$SRCDIR/$src" .
-  lean --target=wasm32-wasip1 --bc="$stem.bc" "$src"
-  leanc --target=wasm32-wasip1 "$stem.bc" -o "$stem.wasm" 2>"$stem.leanc.err" \
+  "$LEAN" --target=wasm32-wasip1 --bc="$stem.bc" "$src"
+  "$LEANC" --target=wasm32-wasip1 "$stem.bc" -o "$stem.wasm" 2>"$stem.leanc.err" \
     || { echo "leanc failed:"; cat "$stem.leanc.err"; return 1; }
   [[ -s "$stem.wasm" ]] || fail "$src: empty .wasm output"
 }
@@ -64,8 +76,8 @@ run_wasm() {
 # UsesCHelper - user C input receives compile-time flags (`-I`).
 # ---------------------------------------------------------------------------
 cp "$SRCDIR/UsesCHelper.lean" "$SRCDIR/UsesCHelper.c" .
-lean --target=wasm32-wasip1 --bc=UsesCHelper.bc UsesCHelper.lean
-leanc --target=wasm32-wasip1 UsesCHelper.bc UsesCHelper.c \
+"$LEAN" --target=wasm32-wasip1 --bc=UsesCHelper.bc UsesCHelper.lean
+"$LEANC" --target=wasm32-wasip1 UsesCHelper.bc UsesCHelper.c \
   -I "$SRCDIR/include" -o UsesCHelper.wasm 2>UsesCHelper.leanc.err \
   || { echo "leanc failed:"; cat UsesCHelper.leanc.err; fail "UsesCHelper.wasm build failed"; }
 output=$(run_wasm UsesCHelper.wasm)
@@ -77,7 +89,7 @@ echo "OK: UsesCHelper.wasm exits 37 (user C compile flags)"
 # Denied - deny-list catches IO.FS.readFile at compile time.
 # ---------------------------------------------------------------------------
 cp "$SRCDIR/Denied.lean" .
-if lean --target=wasm32-wasip1 --bc=denied.bc Denied.lean 2>denied.err; then
+if "$LEAN" --target=wasm32-wasip1 --bc=denied.bc Denied.lean 2>denied.err; then
   fail "lean --target=wasm32-wasip1 accepted Denied.lean despite deny-listed reference"
 fi
 grep -q 'wasm32-wasip1' denied.err \
