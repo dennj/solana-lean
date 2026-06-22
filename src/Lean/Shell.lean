@@ -339,7 +339,7 @@ def ShellOptions.process (opts : ShellOptions)
     return {opts with cFileName? := ← checkOptArg "c" optArg?}
   | 'b' => -- `-b, --bc=fname`
     return {opts with bcFileName? := ← checkOptArg "b" optArg?}
-  | 'Y' => -- `--target=<triple>`
+  | 'A' => -- `--target=<triple>`
     return setTarget opts (← checkOptArg "target" optArg?)
   | 's' => -- `-s, --tstack=num`
     let arg ← checkOptArg "s" optArg?
