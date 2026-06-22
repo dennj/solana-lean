@@ -7,7 +7,7 @@ module
 prelude
 public meta import Lean.Compiler.UnsupportedOnTargetCmd
 meta import Init.Data.Float
-meta import Init.Data.Float32
+meta import Init.Data.Float.Float32
 meta import Init.Data.Int.DivMod.Basic
 meta import Init.Data.Repr
 meta import Init.Data.SInt.Basic
