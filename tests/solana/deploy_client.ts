@@ -174,18 +174,25 @@ async function cmdDiag(
 }
 
 async function cmdDiagKey(programId: PublicKey, payerPath: string) {
-  // Regression check for the unboxed-`Pubkey` bug: DiagKey returns
-  // (accounts[0].key[0] << 8) | key[1]. The account at index 0 is the
-  // payer, so the result must equal the payer's first two address bytes
-  // (each previously read a constant ctor-header byte, not the address).
+  // Regression check for the unboxed-`Pubkey` bug: DiagKey projects the first
+  // two bytes of accounts[0].key and .owner, then compares both Pubkeys against
+  // expected values passed in instruction data. The account at index 0 is the
+  // payer, so those projections and equality checks must match the real account.
   const name = "DiagKey";
   const payer = loadKeypair(payerPath);
   await ensureFunded(payer);
   await waitForExecutable(programId);
+  const payerInfo = await conn.getAccountInfo(payer.publicKey);
+  if (!payerInfo) {
+    fail(`${name}: payer account ${payer.publicKey.toBase58()} not found`);
+  }
+  const expectedKey = payer.publicKey.toBytes();
+  const expectedOwner = payerInfo!.owner.toBytes();
+  const data = Buffer.concat([Buffer.from(expectedKey), Buffer.from(expectedOwner)]);
   const ix = new TransactionInstruction({
     keys: [{ pubkey: payer.publicKey, isSigner: true, isWritable: true }],
     programId,
-    data: Buffer.alloc(8),
+    data,
   });
   const sig = await sendAndConfirmTransaction(conn, new Transaction().add(ix), [payer]);
   const logs = await getTxLogs(sig);
@@ -196,12 +203,33 @@ async function cmdDiagKey(programId: PublicKey, payerPath: string) {
     fail(`${name}: no 0x1eaa marker line in logs:\n${logs.join("\n")}`);
   }
   const got = BigInt("0x" + m![1]);
-  const key = payer.publicKey.toBytes();
-  const expected = (BigInt(key[0]) << 8n) | BigInt(key[1]);
+  // Layout: ((((key[0], key[1], owner[0], owner[1]) as u32) << 2 | flags) << 24)
+  //         | firstKeyMismatchIndex << 16 | actualByte << 8 | expectedByte.
+  const mismatchExpected = Number(got & 0xffn);
+  const mismatchActual = Number((got >> 8n) & 0xffn);
+  const mismatchIdx = Number((got >> 16n) & 0xffn);
+  const prefix = got >> 24n;
+  const keyEq = (prefix & 0x2n) !== 0n;
+  const ownerEq = (prefix & 0x1n) !== 0n;
+  const projected = prefix >> 2n;
+  const projectedKey0 = Number((projected >> 24n) & 0xffn);
+  const projectedKey1 = Number((projected >> 16n) & 0xffn);
+  const projectedOwner0 = Number((projected >> 8n) & 0xffn);
+  const projectedOwner1 = Number(projected & 0xffn);
+  const expectedProjected =
+    (BigInt(expectedKey[0]) << 24n) |
+    (BigInt(expectedKey[1]) << 16n) |
+    (BigInt(expectedOwner[0]) << 8n) |
+    BigInt(expectedOwner[1]);
+  const expected = (((expectedProjected << 2n) | 0x3n) << 24n) | 0xff0000n;
   if (got !== expected) {
-    fail(`${name}: expected 0x${expected.toString(16)} (key[0..1]=0x${key[0].toString(16)},0x${key[1].toString(16)}), got 0x${got.toString(16)}\nlogs:\n${logs.join("\n")}`);
+    const mismatch =
+      mismatchIdx === 0xff
+        ? "none"
+        : `${mismatchIdx}: actual=0x${mismatchActual.toString(16)} expected=0x${mismatchExpected.toString(16)}`;
+    fail(`${name}: expected 0x${expected.toString(16)} (key[0..1]=0x${expectedKey[0].toString(16)},0x${expectedKey[1].toString(16)} owner[0..1]=0x${expectedOwner[0].toString(16)},0x${expectedOwner[1].toString(16)} keyEq=true ownerEq=true keyMismatch=none), got 0x${got.toString(16)} (key[0..1]=0x${projectedKey0.toString(16)},0x${projectedKey1.toString(16)} owner[0..1]=0x${projectedOwner0.toString(16)},0x${projectedOwner1.toString(16)} keyEq=${keyEq} ownerEq=${ownerEq} keyMismatch=${mismatch})\nlogs:\n${logs.join("\n")}`);
   }
-  console.log(`PASS ${name}: result 0x${got.toString(16)} = key[0]<<8 | key[1] (reads real address)`);
+  console.log(`PASS ${name}: key/owner byte projections and Pubkey equality match on-chain account`);
 }
 
 async function cmdSimple(programId: PublicKey, payerPath: string, name: string) {
@@ -330,7 +358,7 @@ const payerPath = process.argv[4];
 
 if (!cmd || !programIdStr || !payerPath) {
   console.error("usage: bun deploy_client.ts <cmd> <programId> <payerKeypair.json>");
-  console.error("  cmd: hello | counter | increment | nat | logmany | tuple | denied | typechecker-stages | typechecker-policy");
+  console.error("  cmd: counter | logmany | typed | pda | diag1 | diag2 | diag3 | diagkey | typechecker-stages | typechecker-policy");
   process.exit(2);
 }
 

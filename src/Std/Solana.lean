@@ -33,15 +33,15 @@ macro "solana_entrypoint" : attr => do
   `(attr| export $exportName:ident)
 
 @[inline, expose]
-def byteArrayBEq (a b : ByteArray) : Bool :=
-  if a.size == b.size then
-    Id.run do
-      for i in [0:a.size] do
-        if a[i]? != b[i]? then
-          return false
-      return true
-  else
-    false
+def byteArrayBEq (a b : ByteArray) : Bool := Id.run do
+  if a.size != b.size then
+    return false
+  for i in [0:a.size] do
+    let x := (a[i]?.getD 0).toUInt64
+    let y := (b[i]?.getD 0).toUInt64
+    if x != y then
+      return false
+  return true
 
 /-- Forwards a Lean `String` to the Solana `sol_log_` syscall. Use `msg` or
 `msg!` rather than calling directly. -/

@@ -218,6 +218,16 @@ static void *lean_sbf_make_pubkey_bytes(const uint8_t *bytes) {
     return lean_freestanding_make_byte_array(bytes, 32);
 }
 
+static lean_sarray_object *lean_sbf_pubkey_bytes_obj(void *pubkey_obj) {
+    return (lean_sarray_object *)pubkey_obj;
+}
+
+static uint8_t *lean_sbf_bump_copy_bytes(const uint8_t *src, uint64_t len) {
+    uint8_t *dst = (uint8_t *)bump_alloc(len == 0 ? 1 : len);
+    for (uint64_t i = 0; i < len; ++i) dst[i] = src[i];
+    return dst;
+}
+
 /* Build a Lean `Std.Solana.AccountInfo` ctor from a parsed account record.
    The structure has 8 fields: key, owner, lamports, data, rentEpoch,
    isSigner, isWritable, executable. We pack the layout to match Lean's
@@ -441,9 +451,7 @@ static uint64_t lean_sbf_build_account_infos(
 
 /* Marshal a Lean `Std.Solana.Instruction` (3 obj fields: programId,
    accounts, data) into a heap-allocated `SolInstruction` plus an array
-   of `SolAccountMeta`. `Pubkey` is an unboxed trivial structure, so a
-   `Pubkey`-typed field IS the 32-byte ByteArray directly — no inner
-   ctor projection (see `lean_sbf_make_pubkey_bytes`). */
+   of `SolAccountMeta`. */
 static SolInstruction *lean_sbf_marshal_instruction(void *inst_obj,
                                                     SolAccountMeta **out_metas)
 {
@@ -451,8 +459,7 @@ static SolInstruction *lean_sbf_marshal_instruction(void *inst_obj,
     void *accounts_arr = lean_ctor_get(inst_obj, 1);
     void *data_bytes   = lean_ctor_get(inst_obj, 2);
 
-    /* programId is the unboxed Pubkey, i.e. the 32-byte ByteArray itself. */
-    lean_sarray_object *prog_sa = (lean_sarray_object *)prog_pubkey;
+    lean_sarray_object *prog_sa = lean_sbf_pubkey_bytes_obj(prog_pubkey);
 
     /* accounts is an `Array AccountMeta`; AccountMeta = { pubkey,
        isWritable, isSigner } — Pubkey field then a 2-byte scalar
@@ -462,9 +469,9 @@ static SolInstruction *lean_sbf_marshal_instruction(void *inst_obj,
     SolAccountMeta *metas = (SolAccountMeta *)bump_alloc(sizeof(SolAccountMeta) * n_accounts);
     for (uint64_t i = 0; i < n_accounts; ++i) {
         void *meta = acc_arr->m_data[i];
-        lean_sarray_object *pk_sa = (lean_sarray_object *)lean_ctor_get(meta, 0);
+        lean_sarray_object *pk_sa = lean_sbf_pubkey_bytes_obj(lean_ctor_get(meta, 0));
         char *scalar_tail = (char *)meta + sizeof(lean_ctor_object) + 1 * sizeof(void *);
-        metas[i].pubkey      = pk_sa->m_data;
+        metas[i].pubkey      = lean_sbf_bump_copy_bytes(pk_sa->m_data, 32);
         metas[i].is_writable = *(uint8_t *)(scalar_tail + 0);
         metas[i].is_signer   = *(uint8_t *)(scalar_tail + 1);
     }
@@ -473,10 +480,10 @@ static SolInstruction *lean_sbf_marshal_instruction(void *inst_obj,
     lean_sarray_object *data_sa = (lean_sarray_object *)data_bytes;
 
     SolInstruction *si = (SolInstruction *)bump_alloc(sizeof(SolInstruction));
-    si->program_id  = prog_sa->m_data;
+    si->program_id  = lean_sbf_bump_copy_bytes(prog_sa->m_data, 32);
     si->accounts    = metas;
     si->account_len = n_accounts;
-    si->data        = data_sa->m_data;
+    si->data        = lean_sbf_bump_copy_bytes(data_sa->m_data, data_sa->m_size);
     si->data_len    = data_sa->m_size;
     return si;
 }
@@ -495,7 +502,7 @@ static SolSignerSeeds *lean_sbf_marshal_signers(void *signers_arr_obj,
         SolSignerSeed *parts = (SolSignerSeed *)bump_alloc(sizeof(SolSignerSeed) * inner->m_size);
         for (uint64_t j = 0; j < inner->m_size; ++j) {
             lean_sarray_object *seg = (lean_sarray_object *)inner->m_data[j];
-            parts[j].addr = seg->m_data;
+            parts[j].addr = lean_sbf_bump_copy_bytes(seg->m_data, seg->m_size);
             parts[j].len  = seg->m_size;
         }
         seeds[i].addr = parts;
@@ -564,9 +571,8 @@ extern uint64_t sol_create_program_address(
     uint8_t             *program_address);
 
 /* Marshal `Array ByteArray` (the seeds list) into a heap-allocated
-   `SolSignerSeed[]`. Each element references the underlying ByteArray's
-   m_data — the seeds array must outlive the syscall, which is fine since
-   the caller holds a Lean reference. */
+   `SolSignerSeed[]`. Copy segment bytes into the bump heap so Solana syscalls
+   never receive pointers into static object data sections. */
 static SolSignerSeed *lean_sbf_marshal_seeds(void *seeds_obj, uint64_t *out_count) {
     lean_array_object *arr = (lean_array_object *)seeds_obj;
     *out_count = arr->m_size;
@@ -574,7 +580,7 @@ static SolSignerSeed *lean_sbf_marshal_seeds(void *seeds_obj, uint64_t *out_coun
     SolSignerSeed *out = (SolSignerSeed *)bump_alloc(sizeof(SolSignerSeed) * arr->m_size);
     for (uint64_t i = 0; i < arr->m_size; ++i) {
         lean_sarray_object *seg = (lean_sarray_object *)arr->m_data[i];
-        out[i].addr = seg->m_data;
+        out[i].addr = lean_sbf_bump_copy_bytes(seg->m_data, seg->m_size);
         out[i].len  = seg->m_size;
     }
     return out;
@@ -602,8 +608,7 @@ static void *lean_sbf_some_pubkey(void *pk) {
 void *lean_sbf_find_program_address(void *seeds_obj, void *program_id_obj) {
     uint64_t seeds_len = 0;
     SolSignerSeed *seeds = lean_sbf_marshal_seeds(seeds_obj, &seeds_len);
-    /* program_id_obj is the unboxed Pubkey, i.e. the 32-byte ByteArray. */
-    lean_sarray_object *pid_sa = (lean_sarray_object *)program_id_obj;
+    lean_sarray_object *pid_sa = lean_sbf_pubkey_bytes_obj(program_id_obj);
     uint8_t out_addr[32];
     uint8_t bump = 0;
     uint64_t rc = sol_try_find_program_address(
@@ -615,8 +620,7 @@ void *lean_sbf_find_program_address(void *seeds_obj, void *program_id_obj) {
 void *lean_sbf_create_program_address(void *seeds_obj, void *program_id_obj) {
     uint64_t seeds_len = 0;
     SolSignerSeed *seeds = lean_sbf_marshal_seeds(seeds_obj, &seeds_len);
-    /* program_id_obj is the unboxed Pubkey, i.e. the 32-byte ByteArray. */
-    lean_sarray_object *pid_sa = (lean_sarray_object *)program_id_obj;
+    lean_sarray_object *pid_sa = lean_sbf_pubkey_bytes_obj(program_id_obj);
     uint8_t out_addr[32];
     uint64_t rc = sol_create_program_address(
         seeds, (int)seeds_len, pid_sa->m_data, out_addr);
