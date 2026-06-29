@@ -586,14 +586,12 @@ static SolSignerSeed *lean_sbf_marshal_seeds(void *seeds_obj, uint64_t *out_coun
     return out;
 }
 
-/* Build an `Option (Pubkey × UInt8)`. Pubkey × UInt8 = ctor tag=0,
-   num_objs=1 (Pubkey), scalar_sz=1 (UInt8). The Pubkey field is the
-   unboxed 32-byte ByteArray. */
+/* Build an `Option (Pubkey × UInt8)`. `Prod` is polymorphic, so the
+   concrete `UInt8` field is boxed and stored as the second object field. */
 static void *lean_sbf_some_pubkey_bump(void *pk, uint8_t bump) {
-    void *pair = lean_alloc_ctor(0, 1, 1);
+    void *pair = lean_alloc_ctor(0, 2, 0);
     lean_ctor_set(pair, 0, pk);
-    char *scalar_tail = (char *)pair + sizeof(lean_ctor_object) + sizeof(void *);
-    *(uint8_t *)scalar_tail = bump;
+    lean_ctor_set(pair, 1, lean_box(bump));
     void *some = lean_alloc_ctor(1, 1, 0);
     lean_ctor_set(some, 0, pair);
     return some;
