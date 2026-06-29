@@ -205,8 +205,15 @@ void *initialize_Std_Solana(uint8_t builtin, void *world) {
 
 #define LEAN_SBF_MAX_PERMITTED_DATA_INCREASE (1024 * 10)
 
-/* Allocate a 32-byte ByteArray and fill it from `bytes`. Used for
-   the Pubkey wrappers inside `lean_sbf_make_program_context`. */
+/* Build a Lean `Std.Solana.Pubkey` from 32 raw bytes.
+
+   `Pubkey` is a single-field structure (`bytes : ByteArray` plus the erased
+   `size_eq` proof), so the compiler treats it as a *trivial structure* and
+   unboxes it: a `Pubkey` value has the same runtime representation as its
+   `ByteArray` field, and `Pubkey.bytes`/`toBytes` compile to the identity.
+   The runtime must therefore store a `Pubkey` as the bare 32-byte ByteArray —
+   NOT wrapped in an explicit ctor. Wrapping makes `a.key.toBytes[i]` read the
+   ctor header as if it were ByteArray payload and return garbage. */
 static void *lean_sbf_make_pubkey_bytes(const uint8_t *bytes) {
     return lean_freestanding_make_byte_array(bytes, 32);
 }
@@ -226,20 +233,16 @@ static void *lean_sbf_make_account_info(
     uint8_t is_writable,
     uint8_t executable
 ) {
-    void *key_pubkey = lean_alloc_ctor(0, 1, 0);
-    lean_ctor_set(key_pubkey, 0, lean_sbf_make_pubkey_bytes(key));
-    void *owner_pubkey = lean_alloc_ctor(0, 1, 0);
-    lean_ctor_set(owner_pubkey, 0, lean_sbf_make_pubkey_bytes(owner));
-
     /* `structure AccountInfo where key owner lamports data rentEpoch
        isSigner isWritable executable`. Bool fields each occupy a UInt8
        in the runtime; per Lean's emit convention they sit in the
        scalar tail of the ctor. obj-fields = key, owner, data; scalar
        area = lamports (8), rentEpoch (8), isSigner (1), isWritable (1),
-       executable (1) = 19 bytes. */
+       executable (1) = 19 bytes. `key`/`owner` are unboxed Pubkeys, i.e.
+       the bare 32-byte ByteArray (see `lean_sbf_make_pubkey_bytes`). */
     void *acc = lean_alloc_ctor(0, /* num_objs = */ 3, /* scalar_sz = */ 8 + 8 + 1 + 1 + 1);
-    lean_ctor_set(acc, 0, key_pubkey);
-    lean_ctor_set(acc, 1, owner_pubkey);
+    lean_ctor_set(acc, 0, lean_sbf_make_pubkey_bytes(key));
+    lean_ctor_set(acc, 1, lean_sbf_make_pubkey_bytes(owner));
     lean_ctor_set(acc, 2, lean_freestanding_make_byte_array(data, data_len));
     /* Scalar tail: write lamports, rentEpoch, then the three bools. */
     char *scalar_tail = (char *)acc + sizeof(lean_ctor_object) + 3 * sizeof(void *);
@@ -319,9 +322,8 @@ void *lean_sbf_make_program_context(const uint8_t *input) {
     void *inst_data = lean_freestanding_make_byte_array(input, inst_len);
     input += inst_len;
 
-    /* program_id: 32 bytes at the end */
-    void *prog_pubkey = lean_alloc_ctor(0, 1, 0);
-    lean_ctor_set(prog_pubkey, 0, lean_sbf_make_pubkey_bytes(input));
+    /* program_id: 32 bytes at the end. Stored as an unboxed Pubkey. */
+    void *prog_pubkey = lean_sbf_make_pubkey_bytes(input);
 
     /* Build ProgramContext = ctor with 3 obj fields. */
     void *ctx = lean_alloc_ctor(0, 3, 0);
@@ -438,9 +440,10 @@ static uint64_t lean_sbf_build_account_infos(
 }
 
 /* Marshal a Lean `Std.Solana.Instruction` (3 obj fields: programId,
-   accounts, data; programId is a Pubkey ctor with one obj field
-   holding a 32-byte ByteArray) into a heap-allocated `SolInstruction`
-   plus an array of `SolAccountMeta`. */
+   accounts, data) into a heap-allocated `SolInstruction` plus an array
+   of `SolAccountMeta`. `Pubkey` is an unboxed trivial structure, so a
+   `Pubkey`-typed field IS the 32-byte ByteArray directly — no inner
+   ctor projection (see `lean_sbf_make_pubkey_bytes`). */
 static SolInstruction *lean_sbf_marshal_instruction(void *inst_obj,
                                                     SolAccountMeta **out_metas)
 {
@@ -448,9 +451,8 @@ static SolInstruction *lean_sbf_marshal_instruction(void *inst_obj,
     void *accounts_arr = lean_ctor_get(inst_obj, 1);
     void *data_bytes   = lean_ctor_get(inst_obj, 2);
 
-    /* programId.bytes is the first (and only) obj field of Pubkey. */
-    void *prog_pubkey_bytes = lean_ctor_get(prog_pubkey, 0);
-    lean_sarray_object *prog_sa = (lean_sarray_object *)prog_pubkey_bytes;
+    /* programId is the unboxed Pubkey, i.e. the 32-byte ByteArray itself. */
+    lean_sarray_object *prog_sa = (lean_sarray_object *)prog_pubkey;
 
     /* accounts is an `Array AccountMeta`; AccountMeta = { pubkey,
        isWritable, isSigner } — Pubkey field then a 2-byte scalar
@@ -460,8 +462,7 @@ static SolInstruction *lean_sbf_marshal_instruction(void *inst_obj,
     SolAccountMeta *metas = (SolAccountMeta *)bump_alloc(sizeof(SolAccountMeta) * n_accounts);
     for (uint64_t i = 0; i < n_accounts; ++i) {
         void *meta = acc_arr->m_data[i];
-        void *pk   = lean_ctor_get(meta, 0);
-        lean_sarray_object *pk_sa = (lean_sarray_object *)lean_ctor_get(pk, 0);
+        lean_sarray_object *pk_sa = (lean_sarray_object *)lean_ctor_get(meta, 0);
         char *scalar_tail = (char *)meta + sizeof(lean_ctor_object) + 1 * sizeof(void *);
         metas[i].pubkey      = pk_sa->m_data;
         metas[i].is_writable = *(uint8_t *)(scalar_tail + 0);
@@ -579,16 +580,9 @@ static SolSignerSeed *lean_sbf_marshal_seeds(void *seeds_obj, uint64_t *out_coun
     return out;
 }
 
-/* Build a `Pubkey` ctor (one obj field, the 32-byte ByteArray) from
-   raw 32 bytes copied off the syscall's output buffer. */
-static void *lean_sbf_pubkey_ctor_from(const uint8_t *bytes32) {
-    void *pk = lean_alloc_ctor(0, 1, 0);
-    lean_ctor_set(pk, 0, lean_sbf_make_pubkey_bytes(bytes32));
-    return pk;
-}
-
 /* Build an `Option (Pubkey × UInt8)`. Pubkey × UInt8 = ctor tag=0,
-   num_objs=1 (Pubkey), scalar_sz=1 (UInt8). */
+   num_objs=1 (Pubkey), scalar_sz=1 (UInt8). The Pubkey field is the
+   unboxed 32-byte ByteArray. */
 static void *lean_sbf_some_pubkey_bump(void *pk, uint8_t bump) {
     void *pair = lean_alloc_ctor(0, 1, 1);
     lean_ctor_set(pair, 0, pk);
@@ -608,27 +602,26 @@ static void *lean_sbf_some_pubkey(void *pk) {
 void *lean_sbf_find_program_address(void *seeds_obj, void *program_id_obj) {
     uint64_t seeds_len = 0;
     SolSignerSeed *seeds = lean_sbf_marshal_seeds(seeds_obj, &seeds_len);
-    /* Pubkey -> bytes pointer. */
-    lean_sarray_object *pid_sa =
-        (lean_sarray_object *)lean_ctor_get(program_id_obj, 0);
+    /* program_id_obj is the unboxed Pubkey, i.e. the 32-byte ByteArray. */
+    lean_sarray_object *pid_sa = (lean_sarray_object *)program_id_obj;
     uint8_t out_addr[32];
     uint8_t bump = 0;
     uint64_t rc = sol_try_find_program_address(
         seeds, (int)seeds_len, pid_sa->m_data, out_addr, &bump);
     if (rc != 0) return lean_box(0); /* Option.none */
-    return lean_sbf_some_pubkey_bump(lean_sbf_pubkey_ctor_from(out_addr), bump);
+    return lean_sbf_some_pubkey_bump(lean_sbf_make_pubkey_bytes(out_addr), bump);
 }
 
 void *lean_sbf_create_program_address(void *seeds_obj, void *program_id_obj) {
     uint64_t seeds_len = 0;
     SolSignerSeed *seeds = lean_sbf_marshal_seeds(seeds_obj, &seeds_len);
-    lean_sarray_object *pid_sa =
-        (lean_sarray_object *)lean_ctor_get(program_id_obj, 0);
+    /* program_id_obj is the unboxed Pubkey, i.e. the 32-byte ByteArray. */
+    lean_sarray_object *pid_sa = (lean_sarray_object *)program_id_obj;
     uint8_t out_addr[32];
     uint64_t rc = sol_create_program_address(
         seeds, (int)seeds_len, pid_sa->m_data, out_addr);
     if (rc != 0) return lean_box(0); /* Option.none — on-curve */
-    return lean_sbf_some_pubkey(lean_sbf_pubkey_ctor_from(out_addr));
+    return lean_sbf_some_pubkey(lean_sbf_make_pubkey_bytes(out_addr));
 }
 
 /* ===========================================================================

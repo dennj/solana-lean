@@ -173,6 +173,37 @@ async function cmdDiag(
   console.log(`PASS ${name}: result 0x${got.toString(16)} matches expected`);
 }
 
+async function cmdDiagKey(programId: PublicKey, payerPath: string) {
+  // Regression check for the unboxed-`Pubkey` bug: DiagKey returns
+  // (accounts[0].key[0] << 8) | key[1]. The account at index 0 is the
+  // payer, so the result must equal the payer's first two address bytes
+  // (each previously read a constant ctor-header byte, not the address).
+  const name = "DiagKey";
+  const payer = loadKeypair(payerPath);
+  await ensureFunded(payer);
+  await waitForExecutable(programId);
+  const ix = new TransactionInstruction({
+    keys: [{ pubkey: payer.publicKey, isSigner: true, isWritable: true }],
+    programId,
+    data: Buffer.alloc(8),
+  });
+  const sig = await sendAndConfirmTransaction(conn, new Transaction().add(ix), [payer]);
+  const logs = await getTxLogs(sig);
+  const m = logs
+    .map((l) => l.match(/Program log: 0x1eaa, 0x[0-9a-f]+, 0x[0-9a-f]+, 0x[0-9a-f]+, 0x([0-9a-f]+)/i))
+    .find((x) => x !== null);
+  if (!m) {
+    fail(`${name}: no 0x1eaa marker line in logs:\n${logs.join("\n")}`);
+  }
+  const got = BigInt("0x" + m![1]);
+  const key = payer.publicKey.toBytes();
+  const expected = (BigInt(key[0]) << 8n) | BigInt(key[1]);
+  if (got !== expected) {
+    fail(`${name}: expected 0x${expected.toString(16)} (key[0..1]=0x${key[0].toString(16)},0x${key[1].toString(16)}), got 0x${got.toString(16)}\nlogs:\n${logs.join("\n")}`);
+  }
+  console.log(`PASS ${name}: result 0x${got.toString(16)} = key[0]<<8 | key[1] (reads real address)`);
+}
+
 async function cmdSimple(programId: PublicKey, payerPath: string, name: string) {
   // Generic "deploys + executes without erroring" check.
   const payer = loadKeypair(payerPath);
@@ -313,6 +344,7 @@ switch (cmd) {
   case "diag1":      await cmdDiag(programId, payerPath, "Diag1Const",  0,   0x2An); break;
   case "diag2":      await cmdDiag(programId, payerPath, "Diag2Byte0", 42,   0x2An); break;
   case "diag3":      await cmdDiag(programId, payerPath, "Diag3Decode", 7,   0x07n); break;
+  case "diagkey":    await cmdDiagKey(programId, payerPath); break;
   case "typechecker-stages": await cmdTypecheckerStages(programId, payerPath); break;
   case "typechecker-policy": await cmdTypecheckerPolicy(programId, payerPath); break;
   default:
