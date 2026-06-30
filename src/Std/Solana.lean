@@ -32,6 +32,15 @@ macro "solana_entrypoint" : attr => do
   let exportName := Lean.mkIdentFrom (← Lean.getRef) `lean_sol_entry_typed (canonical := true)
   `(attr| export $exportName:ident)
 
+/-- Attribute shorthand for a status-returning Solana typed entrypoint.
+
+Unlike `@[solana_entrypoint]`, the returned `UInt64` is propagated to the
+Solana loader ABI: `0` succeeds, non-zero aborts the transaction and rolls
+back account mutations. This pairs with `ProgramResult.entrypoint`. -/
+macro "solana_status_entrypoint" : attr => do
+  let exportName := Lean.mkIdentFrom (← Lean.getRef) `lean_sol_entry_status (canonical := true)
+  `(attr| export $exportName:ident)
+
 @[inline, expose]
 def byteArrayBEq (a b : ByteArray) : Bool := Id.run do
   if a.size != b.size then
@@ -252,9 +261,9 @@ def ofBase58? (encoded : String) : Option Pubkey :=
 
 end Pubkey
 
-/-! Program errors/results. Solana entrypoints return `0` for success and a
-non-zero custom error code for failure; these helpers keep internal code in
-`Except` form and collapse to a return code at the boundary. -/
+/-! Program errors/results. Status-returning Solana entrypoints return `0` for
+success and a non-zero custom error code for failure; these helpers keep
+internal code in `Except` form and collapse to a return code at the boundary. -/
 
 abbrev ProgramError := UInt64
 abbrev ProgramResult (α : Type) := Except ProgramError α

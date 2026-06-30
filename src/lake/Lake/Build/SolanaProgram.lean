@@ -27,8 +27,11 @@ The `CrossTargetSpec` for Solana SBF programs.
 
 * `triple = sbf-solana-solana` — Anza's SBF triple.
 * `outputExt = "so"` — Solana programs are loaded as shared objects.
-* `entrySymbol = "lean_sol_entry_typed"` — the typed-entrypoint shape
-  `(ProgramContext) -> UInt64` that `Std.Solana` exports.
+* `entrySymbol = "lean_sol_entry_typed"` — the legacy value-returning
+  typed-entrypoint shape `(ProgramContext) -> UInt64` that `Std.Solana`
+  exports. Programs that need Solana abort/rollback semantics may instead
+  export `lean_sol_entry_status` via `@[solana_status_entrypoint]`; the SBF
+  linker accepts either symbol.
 -/
 public def solanaSpec : CrossTargetSpec where
   triple      := "sbf-solana-solana"

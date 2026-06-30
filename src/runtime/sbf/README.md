@@ -11,9 +11,12 @@ SBF triple, using the platform-tools clang from
 - `entrypoint.c` — the Solana program ABI adapter. Implements the loader-facing
   `entrypoint(const uint8_t *) -> uint64_t`, parses the input, and calls a
   Lean-defined function exported as
-  `lean_sol_entry_typed(ProgramContext) -> UInt64`. The leanc-generated glue
+  `lean_sol_entry_typed(ProgramContext) -> UInt64` or
+  `lean_sol_entry_status(ProgramContext) -> UInt64`. The leanc-generated glue
   parses the loader's input buffer into a `Std.Solana.ProgramContext` (account
-  table, instruction data, program id) before invoking the Lean entry.
+  table, instruction data, program id) before invoking the Lean entry. Legacy
+  `lean_sol_entry_typed` returns are logged as values and report Solana success;
+  `lean_sol_entry_status` returns are propagated as the loader status code.
 
 - `stubs.c` — the manifest of Lean runtime symbols referenced by code emitted
   for SBF, with trivial inline arithmetic helpers as real implementations and

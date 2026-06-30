@@ -260,6 +260,28 @@ check_counter_program() {
 }
 check_counter_program
 
+# StatusAbort exercises the opt-in status-returning entrypoint shape:
+# `@[solana_status_entrypoint] def entry : ProgramContext -> UInt64`.
+# Unlike legacy value-returning entries, its non-zero return is propagated to
+# the Solana loader and aborts the transaction.
+check_status_abort_program() {
+  local src=StatusAbort.lean
+  local stem="${src%.lean}"
+  cp "$SRCDIR/$src" .
+  run lean --target=sbf-solana-solana --bc="$stem.bc" "$src"
+  leanc_check_stack "$stem" --target=sbf-solana-solana "$stem.bc" -o "$stem.so"
+  local dynsyms; dynsyms=$("$READELF" --dyn-syms "$stem.so")
+  echo "$dynsyms" | grep -q ' lean_sol_entry_status$' \
+    || fail "$stem.so missing lean_sol_entry_status\n$dynsyms"
+  echo "$dynsyms" | grep -q ' entrypoint$' \
+    || fail "$stem.so missing loader entrypoint\n$dynsyms"
+  local syms; syms=$("$READELF" --syms "$stem.so")
+  echo "$syms" | grep -q ' lean_sbf_write_data$' \
+    || fail "$stem.so missing write-data runtime helper\n$syms"
+  echo "OK: $stem.so retains the status-returning entrypoint path"
+}
+check_status_abort_program
+
 # Negative test. Denied.lean references IO.FS.readFile, which is on the
 # SBF deny-list, so `lean --target=sbf-solana-solana` must REJECT it at
 # emit time with a diagnostic naming the offending decl. We exercise the

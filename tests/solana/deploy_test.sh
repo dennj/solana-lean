@@ -29,6 +29,9 @@
 #                    and assert the byte sequence reads 0 → 7 → 42.
 #                    Proves the mutator path round-trips through
 #                    the loader buffer to chain state.
+#   StatusAbort.so — status-returning typed entrypoint. First tx commits
+#                    a write, second tx writes then returns 0xe4; we assert
+#                    the transaction fails and the second write is rolled back.
 #   NatOverflow.so — runs to completion; proves bounded-Nat helpers
 #                    are real, not just symbol-level.
 #
@@ -189,7 +192,7 @@ echo "==============================================================="
 echo " Live-deploy gate"
 echo "==============================================================="
 
-ALL=(LogMany Typed Pda Counter Diag1Const Diag2Byte0 Diag3Decode DiagKey)
+ALL=(LogMany Typed Pda Counter StatusAbort Diag1Const Diag2Byte0 Diag3Decode DiagKey)
 for stem in "${ALL[@]}"; do
   build_so "$stem.lean" || true
 done
@@ -204,6 +207,7 @@ try_deploy_and_check Diag2Byte0   diag2
 try_deploy_and_check Diag3Decode  diag3
 try_deploy_and_check DiagKey      diagkey
 try_deploy_and_check Counter      counter
+try_deploy_and_check StatusAbort  statusabort
 
 echo "==============================================================="
 echo " LIVE-DEPLOY GATE: all required programs passed"

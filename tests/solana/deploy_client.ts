@@ -138,6 +138,68 @@ async function cmdCounter(programId: PublicKey, payerPath: string) {
   console.log(`PASS counter: state mutation observable on-chain (0 → 7 → 42)`);
 }
 
+async function cmdStatusAbort(programId: PublicKey, payerPath: string) {
+  const payer = loadKeypair(payerPath);
+  await ensureFunded(payer);
+  await waitForExecutable(programId);
+
+  const state = Keypair.generate();
+  const space = 8;
+  const rent = await conn.getMinimumBalanceForRentExemption(space);
+  const createIx = SystemProgram.createAccount({
+    fromPubkey: payer.publicKey,
+    newAccountPubkey: state.publicKey,
+    lamports: rent,
+    space,
+    programId,
+  });
+  await sendAndConfirmTransaction(conn, new Transaction().add(createIx), [payer, state]);
+
+  const okIx = new TransactionInstruction({
+    keys: [{ pubkey: state.publicKey, isSigner: false, isWritable: true }],
+    programId,
+    data: Buffer.from([0]),
+  });
+  await sendAndConfirmTransaction(conn, new Transaction().add(okIx), [payer]);
+
+  const committed = await conn.getAccountInfo(state.publicKey);
+  if (!committed) fail("StatusAbort: state account missing after success tx");
+  if (committed.data.readUInt8(0) !== 0x11) {
+    fail(`StatusAbort: expected committed byte 0x11, got 0x${committed.data.readUInt8(0).toString(16)}`);
+  }
+
+  const abortIx = new TransactionInstruction({
+    keys: [{ pubkey: state.publicKey, isSigner: false, isWritable: true }],
+    programId,
+    data: Buffer.from([1]),
+  });
+  const sig = await conn.sendTransaction(
+    new Transaction().add(abortIx),
+    [payer],
+    { skipPreflight: true },
+  );
+  const confirmed = await conn.confirmTransaction(sig, "confirmed");
+  const logs = await getTxLogs(sig);
+  if (!confirmed.value.err) {
+    fail(`StatusAbort: expected non-zero entry return to fail transaction\nlogs:\n${logs.join("\n")}`);
+  }
+  const marker = logs.find((l) =>
+    l.match(/Program log: 0x1eaa, 0x[0-9a-f]+, 0x[0-9a-f]+, 0x1, 0xe4/i)
+  );
+  if (!marker) {
+    fail(`StatusAbort: missing 0xe4 return marker:\n${logs.join("\n")}`);
+  }
+
+  const afterAbort = await conn.getAccountInfo(state.publicKey);
+  if (!afterAbort) fail("StatusAbort: state account missing after abort tx");
+  const got = afterAbort.data.readUInt8(0);
+  if (got !== 0x11) {
+    fail(`StatusAbort: rollback failed, expected byte 0x11 after abort, got 0x${got.toString(16)}\nlogs:\n${logs.join("\n")}`);
+  }
+
+  console.log("PASS StatusAbort: non-zero status aborts transaction and rolls back account write");
+}
+
 // Diagnostic: send `dataByte` as the first byte of an 8-byte instruction
 // data buffer, then assert that the validator log line
 // `Program log: 0x1eaa, 0x0, 0x0, 0x8, 0x<RESULT>` shows `expectedResult`.
@@ -358,7 +420,7 @@ const payerPath = process.argv[4];
 
 if (!cmd || !programIdStr || !payerPath) {
   console.error("usage: bun deploy_client.ts <cmd> <programId> <payerKeypair.json>");
-  console.error("  cmd: counter | logmany | typed | pda | diag1 | diag2 | diag3 | diagkey | typechecker-stages | typechecker-policy");
+  console.error("  cmd: counter | statusabort | logmany | typed | pda | diag1 | diag2 | diag3 | diagkey | typechecker-stages | typechecker-policy");
   process.exit(2);
 }
 
@@ -366,6 +428,7 @@ const programId = new PublicKey(programIdStr);
 
 switch (cmd) {
   case "counter":    await cmdCounter(programId, payerPath); break;
+  case "statusabort": await cmdStatusAbort(programId, payerPath); break;
   case "logmany":    await cmdSimple(programId, payerPath, "LogMany"); break;
   case "typed":      await cmdSimple(programId, payerPath, "Typed"); break;
   case "pda":        await cmdSimple(programId, payerPath, "Pda"); break;

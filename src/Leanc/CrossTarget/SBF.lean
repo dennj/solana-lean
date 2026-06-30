@@ -115,6 +115,7 @@ private def link (root : FilePath) (a : CrossArgs) : IO UInt32 := do
 
     let mut initSymbol? : Option String := none
     let mut hasTypedEntry := false
+    let mut hasStatusEntry := false
     let readelf := (llvmBin / "llvm-readelf").toString
     for objPath in leanObjs do
       let out ← IO.Process.output { cmd := readelf, args := #["--syms", objPath] }
@@ -132,7 +133,12 @@ private def link (root : FilePath) (a : CrossArgs) : IO UInt32 := do
                 && initSymbol?.isNone then
               initSymbol? := some name
             if name == "lean_sol_entry_typed" then hasTypedEntry := true
+            if name == "lean_sol_entry_status" then hasStatusEntry := true
 
+    if hasTypedEntry && hasStatusEntry then
+      throw <| IO.userError <|
+        "leanc --target=sbf-*: program exports both `lean_sol_entry_typed` " ++
+        "and `lean_sol_entry_status`; use exactly one Solana entry symbol."
     let initWrapper := match initSymbol? with
       | some sym =>
         s!"extern void *{sym}(unsigned char, void *);
@@ -141,15 +147,26 @@ void *lean_sbf_module_init(unsigned char b) \{ return {sym}(b, (void *)0); }
       | none =>
         "void *lean_sbf_module_init(unsigned char b) { (void)b; return (void *)1; }
 "
-    unless hasTypedEntry do
+    unless hasTypedEntry || hasStatusEntry do
       throw <| IO.userError <|
         "leanc --target=sbf-*: program exports no recognised entry symbol; " ++
-        "expected `lean_sol_entry_typed` " ++
-        "(use `@[export lean_sol_entry_typed]` on your `(ProgramContext) -> UInt64` entry def, " ++
+        "expected `lean_sol_entry_typed` or `lean_sol_entry_status` " ++
+        "(use `@[solana_entrypoint]` for value-returning entries or " ++
+        "`@[solana_status_entrypoint]` for status-returning entries, " ++
         "or import `Std.Solana`)."
     let entryWrapper :=
+      if hasStatusEntry then
+      "extern unsigned long long lean_sol_entry_status(void *);
+extern void *lean_sbf_make_program_context(const unsigned char *);
+unsigned char lean_sbf_entry_returns_status(void) { return 1; }
+unsigned long long lean_sbf_invoke_entry(const unsigned char *input) {
+  return lean_sol_entry_status(lean_sbf_make_program_context(input));
+}
+"
+      else
       "extern unsigned long long lean_sol_entry_typed(void *);
 extern void *lean_sbf_make_program_context(const unsigned char *);
+unsigned char lean_sbf_entry_returns_status(void) { return 0; }
 unsigned long long lean_sbf_invoke_entry(const unsigned char *input) {
   return lean_sol_entry_typed(lean_sbf_make_program_context(input));
 }
@@ -158,8 +175,10 @@ unsigned long long lean_sbf_invoke_entry(const unsigned char *input) {
     IO.FS.writeFile glueC (initWrapper ++ entryWrapper)
     objects := objects.push (← compileRuntimeC glueC "lean_sbf_glue.o")
 
+    let entryExport :=
+      if hasStatusEntry then "lean_sol_entry_status" else "lean_sol_entry_typed"
     let exportsMap := tmp / "sbf_exports.map"
-    IO.FS.writeFile exportsMap "{\n  global:\n    entrypoint;\n    lean_sol_entry_typed;\n  local:\n    *;\n};\n"
+    IO.FS.writeFile exportsMap s!"\{\n  global:\n    entrypoint;\n    {entryExport};\n  local:\n    *;\n};\n"
 
     let mut linkArgs : Array String :=
       #["-z", "notext", "-shared", "--Bdynamic",

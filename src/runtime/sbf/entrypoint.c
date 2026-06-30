@@ -12,6 +12,7 @@ Solana SBF program entrypoint: ABI adapter from the loader-facing
 
 extern void *lean_sbf_module_init(uint8_t builtin);
 extern uint64_t lean_sbf_invoke_entry(const uint8_t *input);
+extern uint8_t lean_sbf_entry_returns_status(void);
 
 extern void sol_log_64_(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
 
@@ -54,5 +55,5 @@ uint64_t entrypoint(const uint8_t *input) {
     uint64_t data_len = *(const uint64_t *)p;
     /* 0x1EAA marker = "Lean answer" in validator log. */
     sol_log_64_(0x1EAAu, 0, 0, data_len, result);
-    return 0;
+    return lean_sbf_entry_returns_status() ? result : 0;
 }

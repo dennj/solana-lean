@@ -26,9 +26,10 @@ public configuration SolanaProgramConfig (name : Name) extends LeanConfig where
   srcDir : FilePath := "."
 
   /--
-  The root module of the Solana program. Should contain a definition
-  marked with `@[export lean_sol_entry_typed]` typed
-  `(ProgramContext) → UInt64`. Defaults to the name of the target.
+  The root module of the Solana program. Should contain a definition marked
+  with `@[solana_entrypoint]` for value-returning demos or
+  `@[solana_status_entrypoint]` for status-returning programs. Both shapes are
+  typed `(ProgramContext) → UInt64`. Defaults to the name of the target.
   -/
   root : Name := name
 
