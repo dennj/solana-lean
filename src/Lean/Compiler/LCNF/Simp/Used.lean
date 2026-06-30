@@ -7,6 +7,7 @@ module
 
 prelude
 public import Lean.Compiler.LCNF.Simp.SimpM
+public import Lean.Compiler.LCNF.ElimDead
 import Init.Omega
 
 public section
@@ -94,7 +95,13 @@ where
         | .fun decl => markUsedFunDecl decl; go (i-1) (.fun decl code)
         | .jp decl => markUsedFunDecl decl; go (i-1) (.jp decl code)
       else
-        eraseCodeDecl decl
-        go (i-1) code
+        if CodeDecl.safeToElim (← getEnv) decl then
+          eraseCodeDecl decl
+          go (i-1) code
+        else
+          match decl with
+          | .let decl => markUsedLetDecl decl; go (i-1) (.let decl code)
+          | .fun decl => markUsedFunDecl decl; go (i-1) (.fun decl code)
+          | .jp decl => markUsedFunDecl decl; go (i-1) (.jp decl code)
     else
       return code

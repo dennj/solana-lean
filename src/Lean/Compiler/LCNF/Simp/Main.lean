@@ -232,7 +232,7 @@ partial def simp (code : Code .pure) : SimpM (Code .pure) := withIncRecDepth do
     -- This `decl.value != .erased` check is required because `.return` takes
     -- and `FVarId` rather than `Arg`, and the substitution will end up
     -- creating a new erased let decl in that case.
-    if decl.type.isErased && decl.value != .erased then
+    if decl.type.isErased && decl.value != .erased && LetValue.safeToElim (← getEnv) decl.value then
       addSubst decl.fvarId (.erased : Arg .pure)
       eraseLetDecl decl
       simp k

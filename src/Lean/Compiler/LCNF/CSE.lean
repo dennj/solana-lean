@@ -8,7 +8,7 @@ module
 prelude
 public import Lean.Compiler.LCNF.ToExpr
 public import Lean.Compiler.LCNF.PassManager
-public import Lean.Compiler.NeverExtractAttr
+public import Lean.Compiler.LCNF.ElimDead
 
 public section
 
@@ -48,13 +48,6 @@ def replaceFun (decl : FunDecl .pure) (fvarId : FVarId) : M Unit := do
   eraseFunDecl decl
   addFVarSubst decl.fvarId fvarId
 
-def hasNeverExtract (v : LetValue .pure) : CompilerM Bool :=
-  match v with
-  | .const declName .. =>
-    return hasNeverExtractAttribute (← getEnv) declName
-  | .lit _ | .erased | .proj .. | .fvar .. =>
-    return false
-
 partial def _root_.Lean.Compiler.LCNF.Code.cse (shouldElimFunDecls : Bool) (code : Code .pure) :
     CompilerM (Code .pure) :=
   go code |>.run' {}
@@ -69,7 +62,7 @@ where
     match code with
     | .let decl k =>
       let decl ← normLetDecl decl
-      if (← hasNeverExtract decl.value) then
+      if !(LetValue.safeToElim (← getEnv) decl.value) then
         return code.updateLet! decl (← go k)
       else
         -- We only apply CSE to pure code

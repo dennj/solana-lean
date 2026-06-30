@@ -185,6 +185,23 @@ check_log_many() {
 }
 check_log_many
 
+# MsgDCE is the ordering-sensitive never_extract regression: a leading
+# Unit-returning `msg!` followed by a structure projection (`ctx.data`) used
+# to be erased by LCNF simplification/float-let cleanup before dead-let
+# elimination could consult `LetValue.safeToElim`.
+check_msg_dce() {
+  local src=MsgDCE.lean
+  local stem="${src%.lean}"
+  local marker="msgdce: leading log before ctx projection"
+  cp "$SRCDIR/$src" .
+  run lean --target=sbf-solana-solana --bc="$stem.bc" "$src"
+  leanc_check_stack "$stem" --target=sbf-solana-solana "$stem.bc" -o "$stem.so"
+  strings "$stem.so" | grep -q "^$marker$" \
+    || fail "$stem.so dropped leading msg! before ctx.data projection"
+  echo "OK: $stem.so retains leading msg! before ProgramContext projection"
+}
+check_msg_dce
+
 # InvokeShape exercises Std.Solana.invokeSigned. The structural check
 # (next block) asserts that the linked .so retains references to
 # both the runtime helper and the SBF syscall, proving the CPI

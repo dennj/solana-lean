@@ -69,6 +69,10 @@ public def LetValue.safeToElim (env : Environment) (val : LetValue pu) : Bool :=
     | .fap _ args => args.isEmpty
     | .fvar .. => false
 
+public def CodeDecl.safeToElim (env : Environment) : CodeDecl .pure → Bool
+  | .let decl => LetValue.safeToElim env decl.value
+  | .fun .. | .jp .. => true
+
 mutual
 
 partial def visitFunDecl (funDecl : FunDecl pu) : M (FunDecl pu) := do

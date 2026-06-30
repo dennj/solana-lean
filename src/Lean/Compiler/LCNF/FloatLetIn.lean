@@ -8,6 +8,7 @@ module
 prelude
 public import Lean.Compiler.LCNF.FVarUtil
 public import Lean.Compiler.LCNF.PassManager
+public import Lean.Compiler.LCNF.ElimDead
 import Lean.Compiler.LCNF.PhaseExt
 
 public section
@@ -288,9 +289,13 @@ where
       if currentDecision == .unknown then
         /-
         If the decision is still unknown by now this means `decl` is
-        unused in its continuation and can hence be removed.
+        unused in its continuation and can hence be removed unless evaluating
+        it is itself observable, for example a call marked `@[never_extract]`.
         -/
-        eraseCodeDecl decl
+        if CodeDecl.safeToElim (← getEnv) decl then
+          eraseCodeDecl decl
+        else
+          dontFloat decl
       else if currentDecision == .dont then
         dontFloat decl
       else
