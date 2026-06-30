@@ -374,8 +374,8 @@ void *lean_sol_log(void *s) {
 
 typedef struct {
     uint8_t *pubkey;       /* 32 bytes */
-    uint8_t  is_signer;
     uint8_t  is_writable;
+    uint8_t  is_signer;
 } SolAccountMeta;
 
 typedef struct {
