@@ -43,7 +43,18 @@ structure Float where
 attribute [extern "lean_float_to_bits"] Float.toModel
 attribute [extern "lean_float_of_bits"] Float.ofModel
 
-deriving instance DecidableEq for Float
+instance : DecidableEq Float := fun a b =>
+  match decEq a.toModel b.toModel with
+  | .isTrue h => .isTrue (by
+    cases a
+    cases b
+    cases h
+    rfl)
+  | .isFalse h => .isFalse (by
+    intro hEq
+    apply h
+    cases hEq
+    rfl)
 
 instance : Nonempty Float :=
   ⟨⟨default⟩⟩
