@@ -1076,7 +1076,7 @@ def emitBox (builder : LLVM.Builder llvmctx) (z : VarId) (x : VarId) (xType : IR
     | IRType.float   => pure ("lean_box_float", ← LLVM.doubleTypeInContext llvmctx, xv)
     | IRType.float32 => pure ("lean_box_float32", ← LLVM.floatTypeInContext llvmctx, xv)
     | IRType.uint8 | IRType.uint16 =>
-         let xv ← LLVM.buildZExt builder xv (← getSizeTType)
+         let xv ← LLVM.buildZext builder xv (← getSizeTType)
          pure ("lean_box", ← getSizeTType, xv)
     | _              =>
          let xv ← LLVM.buildSext builder xv (← getSizeTType)
