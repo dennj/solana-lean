@@ -25,8 +25,8 @@ canonicalizes the result via `canonExpr`, and stores it.
 variable [MonadLiftT MetaM m] [MonadError m] [Monad m] [MonadCanon m]
 
 private def checkInst (declName : Name) (inst inst' : Expr) : MetaM Unit := do
-  unless (← withReducibleAndInstances <| isDefEq inst inst') do
-    throwError "error while initializing arithmetic operators:\ninstance for `{declName}` {indentExpr inst}\nis not definitionally equal to the expected one {indentExpr inst'}\nwhen only reducible definitions and instances are reduced"
+  unless (← withImplicit <| isDefEq inst inst') do
+    throwError "error while initializing arithmetic operators:\ninstance for `{declName}` {indentExpr inst}\nis not definitionally equal to the expected one {indentExpr inst'}\nwhen definitions and instances are reduced at implicit transparency"
 
 private def mkUnaryFn (type : Expr) (u : Level) (instDeclName : Name) (declName : Name) (expectedInst : Expr) : m Expr := do
   let inst ← MonadCanon.synthInstance <| mkApp (mkConst instDeclName [u]) type

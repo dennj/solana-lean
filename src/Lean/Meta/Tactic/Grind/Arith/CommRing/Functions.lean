@@ -15,8 +15,8 @@ section
 variable [MonadRing m]
 
 def checkInst (declName : Name) (inst inst' : Expr) : MetaM Unit := do
-  unless (← isDefEqI inst inst') do
-    throwError "error while initializing `grind ring` operators:\ninstance for `{declName}` {indentExpr inst}\nis not definitionally equal to the expected one {indentExpr inst'}\nwhen only reducible definitions and instances are reduced"
+  unless (← withImplicit <| isDefEq inst inst') do
+    throwError "error while initializing `grind ring` operators:\ninstance for `{declName}` {indentExpr inst}\nis not definitionally equal to the expected one {indentExpr inst'}\nwhen definitions and instances are reduced at implicit transparency"
 
 def mkUnaryFn (type : Expr) (u : Level) (instDeclName : Name) (declName : Name) (expectedInst : Expr) : m Expr := do
   let inst ← MonadCanon.synthInstance <| mkApp (mkConst instDeclName [u]) type
