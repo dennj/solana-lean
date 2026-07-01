@@ -32,7 +32,7 @@ where
     let some commRingInst ← synthInstance? commRing | return none
     let ringInst := mkApp2 (mkConst ``Grind.CommRing.toRing [u]) type commRingInst
     let semiringInst := mkApp2 (mkConst ``Grind.Ring.toSemiring [u]) type ringInst
-    let commSemiringInst := mkApp2 (mkConst ``Grind.CommRing.toCommSemiring [u]) type semiringInst
+    let commSemiringInst := mkApp2 (mkConst ``Grind.CommRing.toCommSemiring [u]) type commRingInst
     trace_goal[grind.ring] "new ring: {type}"
     let charInst? ← getIsCharInst? u type semiringInst
     let noZeroDivInst? ← getNoZeroDivInst? u type
